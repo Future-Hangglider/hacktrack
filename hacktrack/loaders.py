@@ -243,6 +243,7 @@ class FlyDat:
         # set the origin for the latlng offsets
         self.lng0, self.lat0 = 0, 0
         self.ft0, self.ft1 = None, None  # flight time start and end
+        self.t0, self.t1 = self.ft0, self.ft1
         self.Rdatetime0 = None   # approx UTC time of milliseconds=0, used to offset sensor timstamps to match GPS
         if knowndate is not None:
             self.timestampmidnight = pandas.Timestamp(knowndate)
@@ -262,6 +263,7 @@ class FlyDat:
             self.pIGC = processQaddrelEN(pIGC, self)
             self.tstampmidnight = pandas.Timestamp(self.pIGC.index[0].date())
             self.ft0, self.ft1 = self.pIGC.index[0], self.pIGC.index[-1] 
+            self.t0, self.t1 = self.ft0, self.ft1
             return
         
         # skip past the header part of the flydat file
@@ -349,8 +351,10 @@ class FlyDat:
                 
             if self.ft0 is None:
                 self.ft0, self.ft1 = pC.index[0], pC.index[-1]
+                self.t0, self.t1 = self.ft0, self.ft1
             if c == "V":
                 self.ft0, self.ft1 = TimeFlightStartEndV(pC)
+                self.t0, self.t1 = self.ft0, self.ft1
 
             if c in "QRV":  # devno type for secondary GPS to split out
                 pC0 = pC[pC.devno == 0].drop("devno", 1)  # top shelf spare gps
