@@ -34,7 +34,7 @@ def processZquat(pZ):
     a01 = (pZ.q1*pZ.q2 + pZ.q0*pZ.q3)*2 * pZ.iqsq
     heading = 180 - numpy.degrees(numpy.arctan2(a00, -a01))
     #pZ["heading"] = heading  # below is code to unwind the heading.  get back to original by doing mod 360
-    pZ["heading"] = heading + 360*numpy.cumsum((heading.diff() < -180)+0 - (heading.diff() > 180)+0)
+    pZ["heading"] = heading + 360*numpy.cumsum((heading.diff() < -180)*1 - (heading.diff() > 180)*1)
     return pZ
     
     
@@ -332,6 +332,8 @@ class FlyDat:
             return
         
         for c in lc:
+            if hasattr(self, "p"+c):
+                continue
             pC = self.LoadLType(*recargsDict[c])
             if c == 'Q':
                 pC = processQaddrelEN(pC, self)
@@ -355,6 +357,7 @@ class FlyDat:
             if c == "V":
                 self.ft0, self.ft1 = TimeFlightStartEndV(pC)
                 self.t0, self.t1 = self.ft0, self.ft1
+                pC.deg = pC.deg + 360*numpy.cumsum((pC.deg.diff() < -180)*1 - (pC.deg.diff() > 180)*1) # unwrap the circular winding
 
             if c in "QRV":  # devno type for secondary GPS to split out
                 pC0 = pC[pC.devno == 0].drop("devno", 1)  # top shelf spare gps
