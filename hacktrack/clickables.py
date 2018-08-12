@@ -17,10 +17,38 @@ def plotaltitudecolour(pQ):
     plt.xlim(min(pQ.x), max(pQ.x))
     plt.ylim(min(pQ.y), max(pQ.y))
     plt.colorbar(cs)
-    plt.show()
+
     
+outputfigure = None
+t0t1Label = None
+def plotfigure(t0s, dts, colos, figureheight):
+    if outputfigure:  outputfigure.layout.height = figureheight
+
+    t0 = pandas.Timestamp(t0s*3600*1e9 + fd.timestampmidnight.value)
+    t1 = pandas.Timedelta(dts*60*1e9) + t0
+    t0t1Label.value = "%s %s-%s" % (t0.isoformat()[:10], t0.isoformat()[11:19], t1.isoformat()[11:19])
+    fd.t0, fd.t1 = t0, t1
+    plt.figure(figsize=(8,8))
+    pQ = fd.pQ[t0:t1]
+    pQ5 = pQ.iloc[-5:]
+    if colos == "altitude":
+        plt.subplot(111, aspect="equal")
+        plotaltitudecolour(pQ)
+    elif colos == "YZ":
+        plt.subplot(111, aspect="equal")
+        plt.plot(pQ.y, pQ.alt)
+        plt.scatter(pQ5.x, pQ5.alt)
+    elif colos == "TZ":
+        plt.plot(pQ.alt)
+    else:
+        plt.subplot(111, aspect="equal")
+        plt.plot(pQ.x, pQ.y)
+        plt.scatter(pQ5.x, pQ5.y)
+    plt.gca().xaxis.tick_top()
+    plt.show()
 
 def plotinteractivegpstrack(fd):
+    global outputfigure, t0t1Label
     t0hour = (fd.ft0-fd.timestampmidnight).value/1e9/3600
     t1hour = (fd.ft1-fd.timestampmidnight).value/1e9/3600
     dtminutes = (fd.ft1 - fd.ft0).value/1e9/60
@@ -31,33 +59,13 @@ def plotinteractivegpstrack(fd):
     dtslider = widgets.FloatSlider(description="minutes", value=3, step=1/60, max=dtminutes, continuous_update=False)
     hcolcb = widgets.Checkbox(description="Colour by height", value=False)
     coloptions = widgets.Dropdown(options=['none', 'altitude', 'velocity', 'YZ', 'TZ'])
+    figureheightSelection = widgets.SelectionSlider(options=['300px', '400px', '500px', '600px', '800px'], value='400px', description='display height', continuous_update=False)
 
-    uipaneleft = widgets.VBox([t0slider, dtslider, t0t1Label])
+    uipaneleft = widgets.VBox([t0slider, dtslider, t0t1Label, figureheightSelection])
     uipaneright = widgets.VBox([hcolcb, coloptions])
     ui = widgets.HBox([uipaneleft, uipaneright])
-    def plotfigure(t0s, dts, colos):
-        t0 = pandas.Timestamp(t0s*3600*1e9 + fd.timestampmidnight.value)
-        t1 = pandas.Timedelta(dts*60*1e9) + t0
-        t0t1Label.value = "%s %s-%s" % (t0.isoformat()[:10], t0.isoformat()[11:19], t1.isoformat()[11:19])
-        fd.t0, fd.t1 = t0, t1
-        plt.figure(figsize=(8,8))
-        pQ = fd.pQ[t0:t1]
-        pQ5 = pQ.iloc[-5:]
-        if colos == "altitude":
-            plt.subplot(111, aspect="equal")
-            plotaltitudecolour(pQ)
-        elif colos == "YZ":
-            plt.subplot(111, aspect="equal")
-            plt.plot(pQ.y, pQ.alt)
-            plt.scatter(pQ5.x, pQ5.alt)
-        elif colos == "TZ":
-            plt.plot(pQ.alt)
-        else:
-            plt.subplot(111, aspect="equal")
-            plt.plot(pQ.x, pQ.y)
-            plt.scatter(pQ5.x, pQ5.y)
-        plt.show()
 
-    out = widgets.interactive_output(plotfigure, {'t0s': t0slider, 'dts': dtslider, "colos":coloptions})
-    out.layout.height = '450px'
-    display(out, ui);
+    outputfigure = widgets.interactive_output(plotfigure, {'t0s': t0slider, 'dts': dtslider, "colos":coloptions, "figureheight":figureheightSelection})
+    outputfigure.layout.height = '400px'
+    display(ui, outputfigure);
+
