@@ -7,21 +7,22 @@ import ipywidgets as widgets
 from IPython.display import display
 from matplotlib.collections import LineCollection
 from matplotlib import pyplot as plt
+from . import utils
 
-def plotaltitudecolour(pQ):
+def plotvalcolour(pQ, pval):
     points = numpy.array([pQ.x, pQ.y]).T.reshape(-1, 1, 2)
     segments = numpy.concatenate([points[:-1], points[1:]], axis=1)
-    lc = LineCollection(segments, cmap=plt.get_cmap('cool'), norm=plt.Normalize(min(pQ.alt), max(pQ.alt)))
-    lc.set_array(pQ.alt)
+    lc = LineCollection(segments, cmap=plt.get_cmap('cool'), norm=plt.Normalize(min(pval), max(pval)))
+    lc.set_array(pval)
     cs = plt.gca().add_collection(lc)
-    plt.xlim(min(pQ.x), max(pQ.x))
+    plt.xlim(min(pQ.x), max(pQ.x))  # why is this necessary to set the dimensions?
     plt.ylim(min(pQ.y), max(pQ.y))
     plt.colorbar(cs)
 
     
 outputfigure = None
 t0t1Label = None
-def plotfigure(t0s, dts, colos, figureheight):
+def plotfigure(t0s, dts, colos, figureheight, fd):
     if outputfigure:  outputfigure.layout.height = figureheight
 
     t0 = pandas.Timestamp(t0s*3600*1e9 + fd.timestampmidnight.value)
@@ -31,17 +32,19 @@ def plotfigure(t0s, dts, colos, figureheight):
     plt.figure(figsize=(8,8))
     pQ = fd.pQ[t0:t1]
     pQ5 = pQ.iloc[-5:]
+    if colos != "TZ":
+        plt.subplot(111, aspect="equal")
+
     if colos == "altitude":
-        plt.subplot(111, aspect="equal")
-        plotaltitudecolour(pQ)
+        plotvalcolour(pQ, pQ.alt)
+    elif colos == "velocity":
+        plotvalcolour(pQ, utils.InterpT(pQ, fd.pV.vel))
     elif colos == "YZ":
-        plt.subplot(111, aspect="equal")
         plt.plot(pQ.y, pQ.alt)
         plt.scatter(pQ5.x, pQ5.alt)
     elif colos == "TZ":
         plt.plot(pQ.alt)
     else:
-        plt.subplot(111, aspect="equal")
         plt.plot(pQ.x, pQ.y)
         plt.scatter(pQ5.x, pQ5.y)
     plt.gca().xaxis.tick_top()
@@ -65,7 +68,10 @@ def plotinteractivegpstrack(fd):
     uipaneright = widgets.VBox([hcolcb, coloptions])
     ui = widgets.HBox([uipaneleft, uipaneright])
 
-    outputfigure = widgets.interactive_output(plotfigure, {'t0s': t0slider, 'dts': dtslider, "colos":coloptions, "figureheight":figureheightSelection})
+    params = {'t0s': t0slider, 'dts': dtslider, "colos":coloptions, 
+              "figureheight":figureheightSelection, 
+              'fd':widgets.fixed(fd) }
+    outputfigure = widgets.interactive_output(plotfigure, params)
     outputfigure.layout.height = '400px'
     display(ui, outputfigure);
 

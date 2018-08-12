@@ -124,7 +124,7 @@ def AccurateExpFilterInPlace(vseries, rE):  # rE = -math.log(0.5)/(half-life in 
         dt = (vseries.index[i] - vseries.index[i-1]).microseconds*1e-6
         vseries[i] += (vseries[i-1] - vseries[i])*math.exp(-dt*rE) 
 
-# very important function for quickly aligning timseries (sometimes you filter slightly before if there are oscilations)
+# very important function for quickly aligning timseries (sometimes you filter slightly before if there are oscillations)
 def InterpT(seriestime, seriesother, dts=0):
     vals = numpy.interp(seriestime.index.asi8, seriesother.index.asi8+int(dts*1e9), seriesother)
     return pandas.Series(vals, seriestime.index)
