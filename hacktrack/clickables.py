@@ -9,34 +9,36 @@ from matplotlib.collections import LineCollection
 from matplotlib import pyplot as plt
 from . import utils
 
-def plotvalcolour(pQ, pval):
-    points = numpy.array([pQ.x, pQ.y]).T.reshape(-1, 1, 2)
+
+def plotvalcolour(pQx, pQy, pval):
+    points = numpy.array([pQx, pQy]).T.reshape(-1, 1, 2)
     segments = numpy.concatenate([points[:-1], points[1:]], axis=1)
     lc = LineCollection(segments, cmap=plt.get_cmap('cool'), norm=plt.Normalize(min(pval), max(pval)))
     lc.set_array(pval)
     cs = plt.gca().add_collection(lc)
-    plt.xlim(min(pQ.x), max(pQ.x))  # why is this necessary to set the dimensions?
-    plt.ylim(min(pQ.y), max(pQ.y))
+    plt.xlim(min(pQx), max(pQx))  # why is this necessary to set the dimensions?
+    plt.ylim(min(pQy), max(pQy))
     plt.colorbar(cs)
 
-def plotwhiskers(pQ, vel, deg, velfac, col):
-    spQ = pQ.iloc[::int(len(pQ)/500+1)]
-    svel = utils.InterpT(spQ, vel)
+def plotwhiskers(pQx, pQy, vel, deg, velfac, col):
+    spQx = pQx.iloc[::int(len(pQx)/500+1)]
+    spQy = pQy.iloc[::int(len(pQy)/500+1)]
+    svel = utils.InterpT(spQx, vel)
     if col == "green":
         svel = -(40-svel)*(velfac/4)
     else:
         svel = svel*velfac
-    sdeg = utils.InterpT(spQ, deg)
+    sdeg = utils.InterpT(spQx, deg)
     srad = numpy.radians(sdeg)
     svx = numpy.sin(srad)*svel
     svy = numpy.cos(srad)*svel
-    segments = numpy.array([spQ.x, spQ.y, spQ.x+svx, spQ.y+svy]).T.reshape(-1,2,2)
+    segments = numpy.array([spQx, spQy, spQx+svx, spQy+svy]).T.reshape(-1,2,2)
     lc = LineCollection(segments, color=col)
     plt.gca().add_collection(lc)
     
 outputfigure = None
 t0t1Label = None
-def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, fd):
+def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy, fd):
     if outputfigure:  outputfigure.layout.height = figureheight
 
     t0 = pandas.Timestamp(t0s*3600*1e9 + fd.timestampmidnight.value)
@@ -45,7 +47,6 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, fd):
     fd.t0, fd.t1 = t0, t1
     plt.figure(figsize=(8,8))
     pQ = fd.pQ[t0:t1]
-    pQ5 = pQ.iloc[-5:]
 
     plt.gca().xaxis.tick_top()
     
@@ -56,23 +57,41 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, fd):
         return
     
     # xy plots
+    pQ = fd.pQ[fd.t0:fd.t1]
+    if wx == 0 and wy == 0:
+        pQx, pQy = pQ.x, pQ.y
+    else:
+        ts = (pQ.index - fd.t0).astype(int)*1e-9
+        pQx, pQy = pQ.x - ts*wx, pQ.y - ts*wy
+    
     plt.subplot(111, aspect="equal")
     if colos == "altitude":
-        plotvalcolour(pQ, pQ.alt)
+        plotvalcolour(pQx, pQy, pQ.alt)
     elif colos == "velocity":
-        plotvalcolour(pQ, utils.InterpT(pQ, fd.pV.vel))
+        # warning, velocity not changed by wind vector
+        velmag = utils.InterpT(pQ, fd.pV.vel)
+        if wx != 0 or wy != 0:
+            veldeg = utils.InterpT(pQ, fd.pV.deg)
+            velrad = numpy.radians(veldeg)
+            velvx = numpy.sin(velrad)*velmag
+            velvy = numpy.cos(velrad)*velmag
+            velmag = numpy.hypot(velvx - wx, velvy - wy)
+            
+        plotvalcolour(pQx, pQy, velmag)
+        
     elif colos == "YZ":
-        plt.plot(pQ.y, pQ.alt)
+        plt.plot(pQy, pQ.alt)
         plt.scatter(pQ5.x, pQ5.alt)
     else:
-        plt.plot(pQ.x, pQ.y)
-        plt.scatter(pQ5.x, pQ5.y)
+        plt.plot(pQx, pQy)
+        plt.scatter(pQx.iloc[-5:], pQy.iloc[-5:])
     
     if velwhisker != 0:
-        plotwhiskers(pQ, fd.pV.vel, fd.pV.deg, velwhisker, "pink")
+        # warning, velocity not changed by wind vector
+        plotwhiskers(pQx, pQy, fd.pV.vel, fd.pV.deg, velwhisker, "pink")
     if headingwhisker != 0:
         fd.LoadC("Z")
-        plotwhiskers(pQ, fd.pZ.pitch, fd.pZ.heading, headingwhisker, "green")
+        plotwhiskers(pQx, pQy, fd.pZ.pitch, fd.pZ.heading, headingwhisker, "green")
     
     plt.show()
 
@@ -93,16 +112,20 @@ def plotinteractivegpstrack(fd):
     velwhisker = widgets.IntSlider(min=0, max=5, description="velicity whiskers", continuous_update=False)
     headingwhisker = widgets.IntSlider(min=0, max=5, description="heading whiskers", continuous_update=False)
 
+    windxslider = widgets.FloatSlider(description="windx", step=0.01, min=-10, max=10, start=0, continuous_update=False)
+    windyslider = widgets.FloatSlider(description="windy", step=0.01, min=-10, max=10, start=0, continuous_update=False)
+
     uipaneleft = widgets.VBox([t0slider, dtslider, t0t1Label, figureheightSelection])
     uipaneright = widgets.VBox([hcolcb, coloptions, velwhisker, headingwhisker])
-    ui = widgets.HBox([uipaneleft, uipaneright])
+    uipanefarright = widgets.VBox([windxslider, windyslider])
+    ui = widgets.HBox([uipaneleft, uipaneright, uipanefarright])
 
     params = {'t0s': t0slider, 'dts': dtslider, 
               "velwhisker":velwhisker, "headingwhisker":headingwhisker, 
               "colos":coloptions, 
               "figureheight":figureheightSelection, 
+              "wx":windxslider, "wy":windyslider, 
               'fd':widgets.fixed(fd) }
     outputfigure = widgets.interactive_output(plotfigure, params)
     outputfigure.layout.height = '400px'
     display(ui, outputfigure);
-

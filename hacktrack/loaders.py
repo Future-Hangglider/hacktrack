@@ -355,7 +355,11 @@ class FlyDat:
                 self.ft0, self.ft1 = pC.index[0], pC.index[-1]
                 self.t0, self.t1 = self.ft0, self.ft1
             if c == "V":
-                self.ft0, self.ft1 = TimeFlightStartEndV(pC)
+                try:
+                    self.ft0, self.ft1 = TimeFlightStartEndV(pC)
+                except IndexError:
+                    print("timeflightindexerror")
+                    self.ft0, self.ft1 = pC.index[0], pC.index[-1]
                 self.t0, self.t1 = self.ft0, self.ft1
                 pC.deg = pC.deg + 360*numpy.cumsum((pC.deg.diff() < -180)*1 - (pC.deg.diff() > 180)*1) # unwrap the circular winding
 
