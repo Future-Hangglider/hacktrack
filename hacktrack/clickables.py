@@ -52,7 +52,12 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy
     
     # timewise plot
     if colos == "TZ":  
-        plt.plot(pQ.alt)
+        fd.LoadC("F")
+        baro = fd.pF[fd.t0:fd.t1].Pr
+        balt = utils.BaroToAltComplete(baro, pQ.alt, gpsoffset=None, plt=None)
+        plt.plot(pQ.alt, label="GPS altitude")
+        plt.plot(balt, label="barometric alt")
+        plt.legend()
         plt.show()
         return
     
@@ -60,13 +65,15 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy
     pQ = fd.pQ[fd.t0:fd.t1]
     if wx == 0 and wy == 0:
         pQx, pQy = pQ.x, pQ.y
-    else:
+    else:  # wind added
         ts = (pQ.index - fd.t0).astype(int)*1e-9
         pQx, pQy = pQ.x - ts*wx, pQ.y - ts*wy
     
     plt.subplot(111, aspect="equal")
     if colos == "altitude":
         plotvalcolour(pQx, pQy, pQ.alt)
+        plt.scatter(pQx.iloc[-2:], pQy.iloc[-2:])
+        
     elif colos == "velocity":
         # warning, velocity not changed by wind vector
         velmag = utils.InterpT(pQ, fd.pV.vel)
@@ -76,13 +83,24 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy
             velvx = numpy.sin(velrad)*velmag
             velvy = numpy.cos(velrad)*velmag
             velmag = numpy.hypot(velvx - wx, velvy - wy)
-            
         plotvalcolour(pQx, pQy, velmag)
+        plt.scatter(pQx.iloc[-2:], pQy.iloc[-2:])
+    
+    elif colos == "vario":    
+        # heavily filter so we can use adjacent samples
+        fd.LoadC("F")
+        baro = fd.pF[fd.t0-pandas.Timedelta(seconds=30):fd.t1+pandas.Timedelta(seconds=30)].Pr
+        timestep = numpy.mean((baro.index[1:]-baro.index[:-1]).astype(int)*1e-9)
+        fbaro = utils.FiltFiltButter(baro, f=0.01, n=3)
+        vario = fbaro.diff()*(-0.09/timestep)
+        varioQ = utils.InterpT(pQ, vario)
+        plotvalcolour(pQx, pQy, varioQ)
+        plt.scatter(pQx.iloc[-2:], pQy.iloc[-2:])
         
     elif colos == "YZ":
         plt.plot(pQy, pQ.alt)
-        plt.scatter(pQ5.x, pQ5.alt)
-    else:
+        plt.scatter(pQy.iloc[-5:], pQ.alt.iloc[-5:])
+    else:  # XY case
         plt.plot(pQx, pQy)
         plt.scatter(pQx.iloc[-5:], pQy.iloc[-5:])
     
@@ -108,8 +126,8 @@ def plotinteractivegpstrack(fd):
     figureheightSelection = widgets.SelectionSlider(options=['300px', '400px', '500px', '600px', '800px'], value='400px', description='display height', continuous_update=False)
 
     hcolcb = widgets.Checkbox(description="Colour by height", value=False)
-    coloptions = widgets.Dropdown(options=['none', 'altitude', 'velocity', 'YZ', 'TZ'])
-    velwhisker = widgets.IntSlider(min=0, max=5, description="velicity whiskers", continuous_update=False)
+    coloptions = widgets.Dropdown(options=['XY', 'altitude', 'velocity', 'vario', 'YZ', 'TZ'])
+    velwhisker = widgets.IntSlider(min=0, max=5, description="velocity whiskers", continuous_update=False)
     headingwhisker = widgets.IntSlider(min=0, max=5, description="heading whiskers", continuous_update=False)
 
     windxslider = widgets.FloatSlider(description="windx", step=0.01, min=-10, max=10, start=0, continuous_update=False)

@@ -334,7 +334,7 @@ def BaroToAltComplete(baro, alt, gpsoffset=None, plt=None):
     if gpsoffset is None:
         gpsoffset = BaroToAltOffset(fbaro, alt)
         print("GPS offset determined by BaroToAltLinear as", gpsoffset)
-        offss = [x*0.1  for x in range(0, 40)]
+        offss = [x*0.1  for x in range(0, 50)]
         if plt is not None:
             plt.plot(offss, [ BaroToAltLinearK(baro, alt, x).stderr  for x in offss ])
     k = BaroToAltLinearK(fbaro, alt, gpsoffset)
