@@ -208,12 +208,6 @@ def linfuncAV(line):
     d = int(line[17:21], 16)
     return (t, v*0.01, d*0.1)
 
-def linfuncAR(lin):
-    t = int(lin[3:11], 16)
-    d = lin[13:36]
-    epochd = datetime.datetime.strptime(d[:19], "%Y-%m-%dT%H:%M:%S")
-    print("linfuncR", t, d)
-    return t, epochd.timestamp()
 
 
 recargsW = ('W', linfuncW, ["w", "n"]) 
@@ -280,7 +274,8 @@ class FlyDat:
         self.lng0, self.lat0 = 0, 0
         self.ft0, self.ft1 = None, None  # flight time start and end
         self.t0, self.t1 = self.ft0, self.ft1
-        self.Rdatetime0 = None   # approx UTC time of milliseconds=0, used to offset sensor timstamps to match GPS
+        self.Rdatetime0 = None   # approx UTC time of milliseconds=0, used to offset sensor timestamps to match GPS
+        self.aRdatetime0 = None  # UTC time of milliseconds=0 used in android phone values
         if fname and knowndate is None:
             mdate = re.search("\d\d\d\d-\d\d-\d\d", fname)
             if mdate:
@@ -326,10 +321,17 @@ class FlyDat:
                     if self.Rdatetime0 is None or abs(Rdatetime0 - self.Rdatetime0).value > 1e9:
                         self.Rdatetime0 = Rdatetime0
                         print("Rdatetime0", self.Rdatetime0, "at", rms*0.001)
-                if lin[0] in self.reccounts:
+                elif lin[1] == "R":  # aR-type was the intro to first GPS record setting the origin
+                    rms = int(lin[3:11], 16)
+                    self.aRdatetime0 = pandas.to_datetime(lin[13:36])
+                    print("should be same", self.timestampmidnight, pandas.Timestamp(lin[13:23]))
+                    if self.timestampmidnight is None:
+                        self.timestampmidnight = pandas.Timestamp(lin[13:23])
+                        
+                elif lin[0] in self.reccounts:
                     self.reccounts[lin[0]] += 1
-                elif lin[0] in (":", "a") and lin[1] in phrectypes:
-                    self.reccounts["a"+lin[1]] += 1
+                elif lin[0] == "a" and lin[1] in phrectypes:
+                    self.reccounts[lin[:2]] += 1
                 else:
                     print("badline", lin)
                     
@@ -362,7 +364,7 @@ class FlyDat:
                         i += 1
                     except ValueError:
                         badvalues.append((i, lin))
-        else: # (above is to make it faster in single character case)
+        else: # (above is to make it faster in single character case; this is a[QVF] case)
             for lin in self.fin:
                 if lin[:len(c)] == c:
                     try:
@@ -376,7 +378,8 @@ class FlyDat:
         print("Made for", c, self.reccounts[c], "last index", i)
         if not columns:
             return k
-        tsindex = pandas.DatetimeIndex(self.Rdatetime0 + pandas.Timedelta(milliseconds=dt)  for dt in k[:i,0])
+        ld0 = self.aRdatetime0 if c[0] == "a" else self.Rdatetime0
+        tsindex = pandas.DatetimeIndex(ld0 + pandas.Timedelta(milliseconds=dt)  for dt in k[:i,0])
         return pandas.DataFrame(k[:i,1:], columns=columns, index=tsindex)  # generate the dataframe from the numpy thing
     
     def LoadC(self, lc=None):
@@ -397,12 +400,22 @@ class FlyDat:
                 continue
             pC = self.LoadLType(*recargsDict["a"+c  if prevandroid else c])
             
+            # reset the pQ type to use true GPS times in the u parameter, and improve the microcontroller timestamps offset
             if pCattrname == 'aQ':
                 pC = processQaddrelEN(pC, self)
+                aQ = pC
+                aQ["t_ms"] = (aQ.index - self.aRdatetime0)/pandas.Timedelta(1e6)  # recover the original numbers
+                aQ["u"] = self.timestampmidnight + aQ.u*pandas.Timedelta(1e6)
+                aQ.set_index(["u"], inplace=True)
+                aQ.index.name = None
+                gpstimestampdiff = (aQ.index - self.timestampmidnight).astype(int)/1e6 - aQ.t_ms
+                gpstimestampdiff = gpstimestampdiff.to_series()
+                orgaRdatetime0 = self.aRdatetime0
+                #self.aRdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
+                print("Setting aRdatetime0 %s from %s with std %.2f" % (str(self.aRdatetime0), str(orgaRdatetime0), gpstimestampdiff.std()))
+                
             if pCattrname == 'pQ':
                 pC = processQaddrelEN(pC, self)
-                
-                # reset the pQ type to use true GPS times (instead of bogus microcontroller timestamps)
                 pQ = pC
                 pQ["t_ms"] = (pQ.index - self.Rdatetime0)/pandas.Timedelta(1e6)  # recover the original numbers
                 pQ["u"] = self.timestampmidnight + pQ.u*pandas.Timedelta(1e6)
