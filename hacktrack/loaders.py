@@ -1,5 +1,5 @@
 import numpy, pandas
-import datetime, math
+import datetime, math, re 
 
 # find digital terrain models at https://dds.cr.usgs.gov/srtm/version2_1/SRTM3/Eurasia/
 
@@ -173,7 +173,6 @@ def processQaddrelEN(pQ, fd=None):
         print("despiked", lenpQ-len(pQ), "points from Q")
     return pQ
     
-
         
 def linfuncW(lin):  
     t = int(lin[2:10], 16)
@@ -183,6 +182,39 @@ def linfuncW(lin):
         raise ValueError()
     return t, w, n
     
+def linfuncAF(lin):
+    t = int(lin[3:11], 16)
+    p = int(lin[12:18], 16)
+    return t, p
+    
+def linfuncAZ(line):
+    t = int(line[3:11], 16)
+    q1, q2, q3 = s16(line[12:16])*0.01, s16(line[17:21])*0.01, s16(line[22:26])*0.01        # quaternion 
+    return (t, q1, q2, q3)
+
+def linfuncAQ(lin):
+    t = int(lin[3:11], 16)
+    u = int(lin[12:20], 16)
+    y = s32(lin[21:29])
+    x = s32(lin[30:38])
+    a = int(lin[39:43], 16)
+    if a == 0xFFFF or a <= 50:
+        raise ValueError()
+    return t, u, x/600000, y/600000, a*0.1
+
+def linfuncAV(line):
+    t = int(line[3:11], 16)
+    v = int(line[12:16], 16)
+    d = int(line[17:21], 16)
+    return (t, v*0.01, d*0.1)
+
+def linfuncAR(lin):
+    t = int(lin[3:11], 16)
+    d = lin[13:36]
+    epochd = datetime.datetime.strptime(d[:19], "%Y-%m-%dT%H:%M:%S")
+    print("linfuncR", t, d)
+    return t, epochd.timestamp()
+
 
 recargsW = ('W', linfuncW, ["w", "n"]) 
 recargsR = ('R', linfuncR, ["epoch", "e", "n", "f", "o", "devno"]) 
@@ -198,16 +230,20 @@ recargsU = ('U', linfuncU, ["Dust"])
 recargsQ = ('Q', linfuncQ, ["u", "lng", "lat", "alt", "devno"]) 
 recargsX = ('X', linfuncX, ["Dmb", "tX", "wms"]) 
 recargsN = ('N', linfuncN, ["sN"])   # nickel wire
+recargsAF = ('aF', linfuncAF, ["Pr"])
+recargsZF = ('aZ', linfuncAZ, ["q1", "q2", "q3"])
+recargsAQ = ('aQ', linfuncAQ, ["u", "lng", "lat", "alt"])
+recargsAV = ('aV', linfuncAV, ["vel", "deg"])
 
-
-#linfuncR is above and also inlined to find Rdatetime0
-
+# Grab the function lookups from above (hacky, should put into own object)
 recargsDict = { }
 for k, v in globals().copy().items():
-    if len(k) == 8 and k[:7] == "recargs" and k[7] == v[0]:
+    if 8 <= len(k) <= 9 and k[:7] == "recargs" and k[-1] == v[0][-1]:
         recargsDict[v[0]] = v
+        
 
 rectypes = 'DFLQRVWYZUCPHISGNMOBX*'
+phrectypes = set('FZQV')
 
 def GLoadIGC(fname):
     fin = open(fname, "rb")   # sometimes get non-ascii characters in the header
@@ -245,6 +281,11 @@ class FlyDat:
         self.ft0, self.ft1 = None, None  # flight time start and end
         self.t0, self.t1 = self.ft0, self.ft1
         self.Rdatetime0 = None   # approx UTC time of milliseconds=0, used to offset sensor timstamps to match GPS
+        if fname and knowndate is None:
+            mdate = re.search("\d\d\d\d-\d\d-\d\d", fname)
+            if mdate:
+                knowndate = mdate.group(0)
+                print("Setting knowndate", knowndate)
         if knowndate is not None:
             self.timestampmidnight = pandas.Timestamp(knowndate)
         elif fdother is not None:
@@ -268,6 +309,8 @@ class FlyDat:
         
         # skip past the header part of the flydat file
         self.reccounts = dict((r, 0)  for r in rectypes)
+        self.reccounts.update(dict(("a"+r, 0)  for r in phrectypes))
+
         self.fin = open(self.fname)  # file is kept open and we use seek to go back to start of data to rescan for another data record type
         while self.fin.readline().strip():  
             pass
@@ -285,14 +328,18 @@ class FlyDat:
                         print("Rdatetime0", self.Rdatetime0, "at", rms*0.001)
                 if lin[0] in self.reccounts:
                     self.reccounts[lin[0]] += 1
+                elif lin[0] in (":", "a") and lin[1] in phrectypes:
+                    self.reccounts["a"+lin[1]] += 1
                 else:
                     print("badline", lin)
+                    
         except KeyError:
             print("Bad line", lin, "at post header line", sum(self.reccounts.values()))
             raise
         if self.Rdatetime0 is None:
             self.Rdatetime0 = self.timestampmidnight or pandas.to_datetime("2000")
-            
+        print(", ".join("%s:%d"%(c, d)  for c, d in self.reccounts.items()  if d != 0))
+        
         if lc is not None:
             self.LoadC(lc)
 
@@ -307,13 +354,22 @@ class FlyDat:
         self.fin.seek(self.headerend)
         i = 0
         badvalues = [ ]
-        for lin in self.fin:
-            if lin[0] == c:
-                try:
-                    k[i] = linfunc(lin)
-                    i += 1
-                except ValueError:
-                    badvalues.append((i, lin))
+        if len(c) == 1:
+            for lin in self.fin:
+                if lin[0] == c:
+                    try:
+                        k[i] = linfunc(lin)
+                        i += 1
+                    except ValueError:
+                        badvalues.append((i, lin))
+        else: # (above is to make it faster in single character case)
+            for lin in self.fin:
+                if lin[:len(c)] == c:
+                    try:
+                        k[i] = linfunc(lin)
+                        i += 1
+                    except ValueError:
+                        badvalues.append((i, lin))
                     
         if badvalues:
             print("BAD VALUES", len(badvalues), badvalues[:3])
@@ -331,46 +387,58 @@ class FlyDat:
                 print("%s(n=%d) %s" % (r, n, recargsDict.get(r, ["","","unknown"])[2]))
             return
         
+        prevandroid = False
         for c in lc:
-            if hasattr(self, "p"+c):
+            if c == "a":
+                prevandroid = True
                 continue
-            pC = self.LoadLType(*recargsDict[c])
-            if c == 'Q':
+            pCattrname = ("a" if prevandroid else "p")+c
+            if hasattr(self, pCattrname):
+                continue
+            pC = self.LoadLType(*recargsDict["a"+c  if prevandroid else c])
+            
+            if pCattrname == 'aQ':
                 pC = processQaddrelEN(pC, self)
-                pQ = pC
+            if pCattrname == 'pQ':
+                pC = processQaddrelEN(pC, self)
                 
                 # reset the pQ type to use true GPS times (instead of bogus microcontroller timestamps)
+                pQ = pC
                 pQ["t_ms"] = (pQ.index - self.Rdatetime0)/pandas.Timedelta(1e6)  # recover the original numbers
                 pQ["u"] = self.timestampmidnight + pQ.u*pandas.Timedelta(1e6)
                 pQ.set_index(["u"], inplace=True)
                 pQ.index.name = None
 
                 # recalculate the Rdatetime0 by using the average offset
-                gpstimestampdiff = (pQ.index - self.timestampmidnight).astype(int)/1e6 - pQ.t_ms
-                gpstimestampdiff = gpstimestampdiff.to_series()
-                self.Rdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
-                print("Setting new Rdatetime0 %s with std %.2f" % (str(self.Rdatetime0), gpstimestampdiff.std()))
+                if pQ.size != 0:
+                    gpstimestampdiff = (pQ.index - self.timestampmidnight).astype(int)/1e6 - pQ.t_ms
+                    gpstimestampdiff = gpstimestampdiff.to_series()
+                    self.Rdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
+                    print("Setting new Rdatetime0 %s with std %.2f" % (str(self.Rdatetime0), gpstimestampdiff.std()))
+                else:
+                    self.Rdatetime0 = self.timestampmidnight
                 
-            if self.ft0 is None:
-                self.ft0, self.ft1 = pC.index[0], pC.index[-1]
-                self.t0, self.t1 = self.ft0, self.ft1
-            if c == "V":
-                try:
-                    self.ft0, self.ft1 = TimeFlightStartEndV(pC)
-                except IndexError:
-                    print("timeflightindexerror")
+            if pC.size != 0:
+                if self.ft0 is None:
                     self.ft0, self.ft1 = pC.index[0], pC.index[-1]
-                self.t0, self.t1 = self.ft0, self.ft1
-                pC.deg = pC.deg + 360*numpy.cumsum((pC.deg.diff() < -180)*1 - (pC.deg.diff() > 180)*1) # unwrap the circular winding
+                    self.t0, self.t1 = self.ft0, self.ft1
+                if pCattrname == "pV":
+                    try:
+                        self.ft0, self.ft1 = TimeFlightStartEndV(pC)
+                    except IndexError:
+                        print("timeflightindexerror")
+                        self.ft0, self.ft1 = pC.index[0], pC.index[-1]
+                    self.t0, self.t1 = self.ft0, self.ft1
+                    pC.deg = pC.deg + 360*numpy.cumsum((pC.deg.diff() < -180)*1 - (pC.deg.diff() > 180)*1) # unwrap the circular winding
 
-            if c in "QRV":  # devno type for secondary GPS to split out
+            if pCattrname in ["pQ", "pR", "pV"]:  # devno type for secondary GPS to split out
                 pC0 = pC[pC.devno == 0].drop("devno", 1)  # top shelf spare gps
                 pC = pC[pC.devno == 1].drop("devno", 1)   # lower shelf bluefly device
                 if len(pC0):
-                    self.__setattr__("p"+c+"0", pC0)
-            if c == "Z":
+                    self.__setattr__(pCattrname+"0", pC0)
+            if pCattrname == "pZ":
                 pC = processZquat(pC)
-            self.__setattr__("p"+c, pC)
+            self.__setattr__(pCattrname, pC)
 
 
     def LoadIGC(self, fname):
