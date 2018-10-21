@@ -36,32 +36,112 @@ def plotwhiskers(pQx, pQy, vel, deg, velfac, col):
     lc = LineCollection(segments, color=col)
     plt.gca().add_collection(lc)
     
+def CalcVario(fd):
+    fd.LoadC("F")
+    baro = fd.pF[fd.t0-pandas.Timedelta(seconds=30):fd.t1+pandas.Timedelta(seconds=30)].Pr
+    timestep = numpy.mean((baro.index[1:]-baro.index[:-1]).astype(int)*1e-9)
+    fbaro = utils.FiltFiltButter(baro, f=0.01, n=3)
+    vario = fbaro.diff()*(-0.09/timestep)
+    return vario.dropna()
+
+    
 outputfigure = None
 t0t1Label = None
-def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy, fd):
-    if outputfigure:  outputfigure.layout.height = figureheight
+
+def rescaletsval(val, brescale, lo=None, hi=None):
+    if not brescale:
+        return val
+    if lo is None:
+        lo, hi = min(val), max(val)
+    return (val - (hi+lo)/2)*(2/(hi-lo))
+
+
+def plottimeseries(bZalt, hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, fd):
+    plt.figure(figsize=(13,8))
+
+    if bZalt:
+        pQ = fd.pQ[fd.t0:fd.t1]
+        fd.LoadC("F")
+        baro = fd.pF[fd.t0:fd.t1].Pr
+        if len(fd.pQ):
+            balt = utils.BaroToAltComplete(baro, pQ.alt, gpsoffset=None, plt=None)
+            plt.plot(pQ.alt, label="GPS altitude")
+        else:
+            balt = (102726 - baro)*0.037867
+        plt.plot(balt, label="barometric alt")
+        if hasattr(fd, "aF"):
+            aQ = fd.aQ[fd.t0:fd.t1]
+            baroA = fd.pF[fd.t0:fd.t1].Pr
+            if len(fd.pQ):
+                baltA = utils.BaroToAltComplete(baroA, aQ.alt, gpsoffset=None, plt=None)
+                plt.plot(aQ.alt, label="GPSA altitude")
+            else:
+                baltA = (102726 - baro)*0.037867
+            plt.plot(baltA, label="barometricA alt")
+        plt.gca().xaxis.tick_top()
+        plt.legend()
+        plt.show()
+        return
+    
+    cbcount = cbvario + cbaccellerations + cborientations + cbhangspot
+    if cbcount == 0:
+        cbvario = True
+    brescale = (cbcount >= 2)
+    if cbvario:
+        vario = CalcVario(fd)
+        vario = rescaletsval(vario, brescale)
+        plt.plot(vario, label="Vario")
+        
+    if cbaccellerations or cborientations:
+        fd.LoadC("Z")
+        pZ = fd.pZ[fd.t0:fd.t1]
+        if cbaccellerations:
+            lo, hi = min(min(pZ.ax), min(pZ.ay), min(pZ.az)), max(max(pZ.ax), max(pZ.ay), max(pZ.az))
+            plt.plot(rescaletsval(pZ.ax, brescale, lo, hi))
+            plt.plot(rescaletsval(pZ.ay, brescale, lo, hi))
+            plt.plot(rescaletsval(pZ.az, brescale, lo, hi))
+        if cborientations:
+            lo, hi = min(min(pZ.pitch), min(pZ.roll)), max(max(pZ.pitch), max(pZ.roll))
+            plt.plot(rescaletsval(pZ.pitch, brescale, lo, hi))
+            plt.plot(rescaletsval(pZ.roll, brescale, lo, hi))
+            plt.plot(rescaletsval(pZ.heading, brescale))
+
+    if cbhangspot:
+        td = pandas.Timedelta(seconds=hangspottimeslider)
+        fy = fd.fy[fd.t0-td:fd.t1-td]
+        lo, hi = min(min(fy.x), min(fy.y)), max(max(fy.x), max(fy.y))
+        fyx = rescaletsval(fy.x, brescale)
+        fyy = rescaletsval(fy.y, brescale)
+        plt.plot(fy.index+td, fyx, label="hangspotx")
+        plt.plot(fy.index+td, fyy, label="hangspoty")
+
+    plt.gca().xaxis.tick_top()
+    plt.legend()
+    plt.show()
+
+
+    
+def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy, 
+               hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, 
+               fd):
+    if outputfigure:
+        outputfigure.layout.height = figureheight
 
     t0 = pandas.Timestamp(t0s*3600*1e9 + fd.timestampmidnight.value)
     t1 = pandas.Timedelta(dts*60*1e9) + t0
     t0t1Label.value = "%s %s-%s" % (t0.isoformat()[:10], t0.isoformat()[11:19], t1.isoformat()[11:19])
     fd.t0, fd.t1 = t0, t1
-    plt.figure(figsize=(8,8))
-    pQ = fd.pQ[t0:t1]
 
-    plt.gca().xaxis.tick_top()
     
-    # timewise plot
-    if colos == "TZ":  
-        fd.LoadC("F")
-        baro = fd.pF[fd.t0:fd.t1].Pr
-        balt = utils.BaroToAltComplete(baro, pQ.alt, gpsoffset=None, plt=None)
-        plt.plot(pQ.alt, label="GPS altitude")
-        plt.plot(balt, label="barometric alt")
-        plt.legend()
-        plt.show()
+    # timewise plots
+    if colos[:1] == "T":
+        plottimeseries((colos == "TZ"), hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, fd)
         return
     
     # xy plots
+    plt.figure(figsize=(8,8))
+    plt.gca().xaxis.tick_top()
+
     pQ = fd.pQ[fd.t0:fd.t1]
     if wx == 0 and wy == 0:
         pQx, pQy = pQ.x, pQ.y
@@ -88,11 +168,7 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy
     
     elif colos == "vario":    
         # heavily filter so we can use adjacent samples
-        fd.LoadC("F")
-        baro = fd.pF[fd.t0-pandas.Timedelta(seconds=30):fd.t1+pandas.Timedelta(seconds=30)].Pr
-        timestep = numpy.mean((baro.index[1:]-baro.index[:-1]).astype(int)*1e-9)
-        fbaro = utils.FiltFiltButter(baro, f=0.01, n=3)
-        vario = fbaro.diff()*(-0.09/timestep)
+        vario = CalcVario(fd)
         varioQ = utils.InterpT(pQ, vario)
         plotvalcolour(pQx, pQy, varioQ)
         plt.scatter(pQx.iloc[-2:], pQy.iloc[-2:])
@@ -113,6 +189,7 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy
     
     plt.show()
 
+    
 def plotinteractivegpstrack(fd):
     global outputfigure, t0t1Label
     t0hour = (fd.ft0-fd.timestampmidnight).value/1e9/3600
@@ -125,25 +202,39 @@ def plotinteractivegpstrack(fd):
     dtslider = widgets.FloatSlider(description="minutes", value=3, step=1/60, max=dtminutes, continuous_update=False)
     figureheightSelection = widgets.SelectionSlider(options=['300px', '400px', '500px', '600px', '800px'], value='400px', description='display height', continuous_update=False)
 
-    hcolcb = widgets.Checkbox(description="Colour by height", value=False)
-    coloptions = widgets.Dropdown(options=['XY', 'altitude', 'velocity', 'vario', 'YZ', 'TZ'])
+    coloptions = widgets.Dropdown(options=['Tseries', 'TZ', 'XY', 'altitude', 'velocity', 'vario', 'YZ'])
+
+    cbvario = widgets.Checkbox(description="vario", value=False)
+    cbaccellerations = widgets.Checkbox(description="accel", value=False)
+    cborientations = widgets.Checkbox(description="orient", value=False)
+    cbhangspot = widgets.Checkbox(description="hangspot", value=False)
+    hangspottimeslider = widgets.FloatSlider(description="hangspot_t", step=0.01, min=-10, max=10, start=0, continuous_update=False)
+
     velwhisker = widgets.IntSlider(min=0, max=5, description="velocity whiskers", continuous_update=False)
     headingwhisker = widgets.IntSlider(min=0, max=5, description="heading whiskers", continuous_update=False)
 
     windxslider = widgets.FloatSlider(description="windx", step=0.01, min=-10, max=10, start=0, continuous_update=False)
     windyslider = widgets.FloatSlider(description="windy", step=0.01, min=-10, max=10, start=0, continuous_update=False)
 
+    # build up the panels of components
     uipaneleft = widgets.VBox([t0slider, dtslider, t0t1Label, figureheightSelection])
-    uipaneright = widgets.VBox([hcolcb, coloptions, velwhisker, headingwhisker])
-    uipanefarright = widgets.VBox([windxslider, windyslider])
+    
+    uicboxes = widgets.HBox([cbvario, cbaccellerations])
+    uipaneright = widgets.VBox([uicboxes, coloptions, velwhisker, headingwhisker])
+    
+    uicboxes2 = widgets.HBox([cborientations, cbhangspot])
+    uipanefarright = widgets.VBox([windxslider, windyslider, uicboxes2, hangspottimeslider])
+    
     ui = widgets.HBox([uipaneleft, uipaneright, uipanefarright])
 
     params = {'t0s': t0slider, 'dts': dtslider, 
               "velwhisker":velwhisker, "headingwhisker":headingwhisker, 
               "colos":coloptions, 
               "figureheight":figureheightSelection, 
-              "wx":windxslider, "wy":windyslider, 
+              "wx":windxslider, "wy":windyslider, "hangspottimeslider":hangspottimeslider, 
+              "cbvario":cbvario, "cbaccellerations":cbaccellerations, "cborientations":cborientations, "cbhangspot":cbhangspot, 
               'fd':widgets.fixed(fd) }
     outputfigure = widgets.interactive_output(plotfigure, params)
     outputfigure.layout.height = '400px'
     display(ui, outputfigure);
+    

@@ -37,7 +37,17 @@ def processZquat(pZ):
     pZ["heading"] = heading + 360*numpy.cumsum((heading.diff() < -180)*1 - (heading.diff() > 180)*1)
     return pZ
     
-    
+def processZquatA(pZ):  # the sensor from the phone
+    pZ["q0"] = numpy.sqrt(1 - pZ.q1**2 - pZ.q2**2 - pZ.q3**2)
+    pZ["roll"] = numpy.degrees(numpy.arcsin((pZ.q2*pZ.q3 + pZ.q0*pZ.q1)*2))
+    pZ["pitch"] = numpy.degrees(numpy.arcsin((pZ.q1*pZ.q3 - pZ.q0*pZ.q2)*2))
+    a00 = (pZ.q0**2 + pZ.q1**2)*2 - 1
+    a01 = (pZ.q1*pZ.q2 + pZ.q0*pZ.q3)*2
+    heading = 180 - numpy.degrees(numpy.arctan2(a00, -a01))
+    #pZ["heading"] = heading  # below is code to unwind the heading.  get back to original by doing mod 360
+    pZ["heading"] = heading + 360*numpy.cumsum((heading.diff() < -180)*1 - (heading.diff() > 180)*1)
+    return pZ
+
 
 Fkphmpsfac = 0.01*1000/3600
 def linfuncV(line):
@@ -189,7 +199,7 @@ def linfuncAF(lin):
     
 def linfuncAZ(line):
     t = int(line[3:11], 16)
-    q1, q2, q3 = s16(line[12:16])*0.01, s16(line[17:21])*0.01, s16(line[22:26])*0.01        # quaternion 
+    q1, q2, q3 = s16(line[12:16])/32768, s16(line[17:21])/32768, s16(line[22:26])/32768        # quaternion 
     return (t, q1, q2, q3)
 
 def linfuncAQ(lin):
@@ -225,7 +235,7 @@ recargsQ = ('Q', linfuncQ, ["u", "lng", "lat", "alt", "devno"])
 recargsX = ('X', linfuncX, ["Dmb", "tX", "wms"]) 
 recargsN = ('N', linfuncN, ["sN"])   # nickel wire
 recargsAF = ('aF', linfuncAF, ["Pr"])
-recargsZF = ('aZ', linfuncAZ, ["q1", "q2", "q3"])
+recargsAZ = ('aZ', linfuncAZ, ["q1", "q2", "q3"])
 recargsAQ = ('aQ', linfuncAQ, ["u", "lng", "lat", "alt"])
 recargsAV = ('aV', linfuncAV, ["vel", "deg"])
 
@@ -310,10 +320,15 @@ class FlyDat:
         while self.fin.readline().strip():  
             pass
         self.headerend = self.fin.tell()
+        prev2lin = None
+        prev1linA = None
+        linAdiffsum = 0
+        linAdiffcount = 0
         try:
             for lin in self.fin:
                 #Rt[ms]d"[isodate]"e[latdE]n[latdN]f[lngdE]o[lngdN] GPS cooeffs
                 if lin[0] == "R":  # R-type was the intro to first GPS record setting the origin
+                    print("undebugged R record", lin)
                     rms = int(lin[2:10], 16)
                     rdd = pandas.to_datetime(lin[12:35])
                     self.timestampmidnight = pandas.Timestamp(lin[12:22])
@@ -330,21 +345,38 @@ class FlyDat:
                         
                 elif lin[0] in self.reccounts:
                     self.reccounts[lin[0]] += 1
+                    if prev1linA is not None and prev2lin:  # find sequence of 3 values to fit the timing between
+                        lin2t = int(prev2lin[2:10], 16)
+                        lin1At = int(prev1linA[3:11], 16)
+                        lint = int(lin[2:10], 16)
+                        linAdiffsum += lin1At - (lint + lin2t)/2
+                        linAdiffcount += 1
+                    prev2lin = lin
+                    prev1linA = None
+                    
                 elif lin[0] == "a" and lin[1] in phrectypes:
                     self.reccounts[lin[:2]] += 1
+                    prev1linA = lin
                 else:
                     print("badline", lin)
-                    
+
         except KeyError:
             print("Bad line", lin, "at post header line", sum(self.reccounts.values()))
             raise
-        if self.Rdatetime0 is None:
-            self.Rdatetime0 = self.timestampmidnight or pandas.to_datetime("2000")
+        #if self.Rdatetime0 is None:
+        #    self.Rdatetime0 = self.timestampmidnight or pandas.to_datetime("2000")
         print(", ".join("%s:%d"%(c, d)  for c, d in self.reccounts.items()  if d != 0))
+
+        if linAdiffcount != 0:
+            print("linAdifftime", linAdiffsum/linAdiffcount, "count", linAdiffcount)
+            self.Rdatetime0byinterleave = self.aRdatetime0 + pandas.Timedelta(milliseconds=linAdiffsum/linAdiffcount)
         
         if lc is not None:
             self.LoadC(lc)
-
+        if self.t0 is None:
+            self.t0 = self.Rdatetime0byinterleave
+            print("Missing GPS data, so setting t0 to", self.Rdatetime0byinterleave)
+            
 
     def LoadLType(self, c, linfunc, columns):
         if isinstance(columns, int):
@@ -378,7 +410,17 @@ class FlyDat:
         print("Made for", c, self.reccounts[c], "last index", i)
         if not columns:
             return k
-        ld0 = self.aRdatetime0 if c[0] == "a" else self.Rdatetime0
+        if c[0] == "a":
+            ld0 = self.aRdatetime0
+        elif self.Rdatetime0 is not None:
+            ld0 = self.Rdatetime0
+        elif c == "Q":
+            ld0 = self.timestampmidnight
+        else: 
+            if len(k) != 0:
+                print("Warning, using guessed (not GPS) timing corrected value on", c, len(k))
+            ld0 = self.Rdatetime0byinterleave
+            
         tsindex = pandas.DatetimeIndex(ld0 + pandas.Timedelta(milliseconds=dt)  for dt in k[:i,0])
         return pandas.DataFrame(k[:i,1:], columns=columns, index=tsindex)  # generate the dataframe from the numpy thing
     
@@ -414,24 +456,22 @@ class FlyDat:
                 #self.aRdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
                 print("Setting aRdatetime0 %s from %s with std %.2f" % (str(self.aRdatetime0), str(orgaRdatetime0), gpstimestampdiff.std()))
                 
-            if pCattrname == 'pQ':
-                pC = processQaddrelEN(pC, self)
-                pQ = pC
-                pQ["t_ms"] = (pQ.index - self.Rdatetime0)/pandas.Timedelta(1e6)  # recover the original numbers
-                pQ["u"] = self.timestampmidnight + pQ.u*pandas.Timedelta(1e6)
-                pQ.set_index(["u"], inplace=True)
-                pQ.index.name = None
-
-                # recalculate the Rdatetime0 by using the average offset
-                if pQ.size != 0:
-                    gpstimestampdiff = (pQ.index - self.timestampmidnight).astype(int)/1e6 - pQ.t_ms
-                    gpstimestampdiff = gpstimestampdiff.to_series()
-                    self.Rdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
-                    print("Setting new Rdatetime0 %s with std %.2f" % (str(self.Rdatetime0), gpstimestampdiff.std()))
-                else:
-                    self.Rdatetime0 = self.timestampmidnight
-                
             if pC.size != 0:
+                if pCattrname == 'pQ':
+                    pC = processQaddrelEN(pC, self)
+                    pQ = pC
+                    pQ["t_ms"] = (pQ.index - self.timestampmidnight)/pandas.Timedelta(1e6)  # recover the original numbers
+                    pQ["u"] = self.timestampmidnight + pQ.u*pandas.Timedelta(1e6)
+                    pQ.set_index(["u"], inplace=True)
+                    pQ.index.name = None
+
+                    # recalculate the Rdatetime0 by using the average offset
+                    if pQ.size != 0:
+                        gpstimestampdiff = (pQ.index - self.timestampmidnight).astype(int)/1e6 - pQ.t_ms
+                        gpstimestampdiff = gpstimestampdiff.to_series()
+                        self.Rdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
+                        print("Setting new Rdatetime0 %s with std %.2f" % (str(self.Rdatetime0), gpstimestampdiff.std()))
+                
                 if self.ft0 is None:
                     self.ft0, self.ft1 = pC.index[0], pC.index[-1]
                     self.t0, self.t1 = self.ft0, self.ft1
@@ -451,6 +491,9 @@ class FlyDat:
                     self.__setattr__(pCattrname+"0", pC0)
             if pCattrname == "pZ":
                 pC = processZquat(pC)
+            if pCattrname == "aZ":
+                pC = processZquatA(pC)
+
             self.__setattr__(pCattrname, pC)
 
 
