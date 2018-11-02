@@ -303,6 +303,7 @@ class FlyDat:
         if self.fname is None:
             return
             
+            
         # initiating with IGC type
         if self.fname[-4:].lower() == ".igc":
             pIGC, hfcodes = GLoadIGC(self.fname)
@@ -310,12 +311,15 @@ class FlyDat:
             self.tstampmidnight = pandas.Timestamp(self.pIGC.index[0].date())
             self.ft0, self.ft1 = self.pIGC.index[0], self.pIGC.index[-1] 
             self.t0, self.t1 = self.ft0, self.ft1
+            self.bIGConly = True
+            self.pQ = self.pIGC
             return
         
-        # skip past the header part of the flydat file
+        self.bIGConly = False
         self.reccounts = dict((r, 0)  for r in rectypes)
         self.reccounts.update(dict(("a"+r, 0)  for r in phrectypes))
 
+        # skip past the header part of the flydat file
         self.fin = open(self.fname)  # file is kept open and we use seek to go back to start of data to rescan for another data record type
         while self.fin.readline().strip():  
             pass

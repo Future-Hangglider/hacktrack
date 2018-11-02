@@ -61,23 +61,27 @@ def plottimeseries(bZalt, hangspottimeslider, cbvario, cbaccellerations, cborien
 
     if bZalt:
         pQ = fd.pQ[fd.t0:fd.t1]
-        fd.LoadC("F")
-        baro = fd.pF[fd.t0:fd.t1].Pr
-        if len(fd.pQ):
-            balt = utils.BaroToAltComplete(baro, pQ.alt, gpsoffset=None, plt=None)
-            plt.plot(pQ.alt, label="GPS altitude")
+        if fd.bIGConly:
+            plt.plot(pQ.altb, label="barometric alt")  # pQ === pIGC
+            plt.plot(pQ.alt, label="gps alt")
         else:
-            balt = (102726 - baro)*0.037867
-        plt.plot(balt, label="barometric alt")
-        if hasattr(fd, "aF"):
-            aQ = fd.aQ[fd.t0:fd.t1]
-            baroA = fd.pF[fd.t0:fd.t1].Pr
+            fd.LoadC("F")
+            baro = fd.pF[fd.t0:fd.t1].Pr
             if len(fd.pQ):
-                baltA = utils.BaroToAltComplete(baroA, aQ.alt, gpsoffset=None, plt=None)
-                plt.plot(aQ.alt, label="GPSA altitude")
+                balt = utils.BaroToAltComplete(baro, pQ.alt, gpsoffset=None, plt=None)
+                plt.plot(pQ.alt, label="GPS altitude")
             else:
-                baltA = (102726 - baro)*0.037867
-            plt.plot(baltA, label="barometricA alt")
+                balt = (102726 - baro)*0.037867
+            plt.plot(balt, label="barometric alt")
+            if hasattr(fd, "aF"):
+                aQ = fd.aQ[fd.t0:fd.t1]
+                baroA = fd.pF[fd.t0:fd.t1].Pr
+                if len(fd.pQ):
+                    baltA = utils.BaroToAltComplete(baroA, aQ.alt, gpsoffset=None, plt=None)
+                    plt.plot(aQ.alt, label="GPSA altitude")
+                else:
+                    baltA = (102726 - baro)*0.037867
+                plt.plot(baltA, label="barometricA alt")
         plt.gca().xaxis.tick_top()
         plt.legend()
         plt.show()
@@ -86,7 +90,7 @@ def plottimeseries(bZalt, hangspottimeslider, cbvario, cbaccellerations, cborien
     cbcount = cbvario + cbaccellerations + cborientations + cbhangspot
     if cbcount == 0:
         cbvario = True
-    brescale = (cbcount >= 2)
+    brescale = (cbcount >= 2)  # more than one value; so scale them all
     if cbvario:
         vario = CalcVario(fd)
         vario = rescaletsval(vario, brescale)
@@ -208,6 +212,9 @@ def plotinteractivegpstrack(fd):
     cbaccellerations = widgets.Checkbox(description="accel", value=False)
     cborientations = widgets.Checkbox(description="orient", value=False)
     cbhangspot = widgets.Checkbox(description="hangspot", value=False)
+
+    #cbaccellerations.layout.width = cbvario.layout.width = "60px"  # causes overlaps and doesn't work.  needs more looking at
+
     hangspottimeslider = widgets.FloatSlider(description="hangspot_t", step=0.01, min=-10, max=10, start=0, continuous_update=False)
 
     velwhisker = widgets.IntSlider(min=0, max=5, description="velocity whiskers", continuous_update=False)
