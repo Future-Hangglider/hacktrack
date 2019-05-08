@@ -148,7 +148,9 @@ def linfuncR(lin):
 #plt.figure(figsize=(10, 20))
 #plt.subplot(111, aspect="equal")
 lng0, lat0 = 0, 0  # make things easier, we don't want different origins really
+# set them with processQaddrelEN("setorigin", (lng, lat))
 nyfac0, exfac0 = 0, 0  # multiply by 1/60000 to find the precision of the IGC file
+
 def processQaddrelEN(pQ, fd=None):
     global lng0, lat0, nyfac0, exfac0
     if type(pQ) == str and pQ == "setorigin":
@@ -160,8 +162,11 @@ def processQaddrelEN(pQ, fd=None):
             lng0, lat0 = ph.lng, ph.lat
     else: 
         if len(pQ) != 0 and fd.lng0 == 0 and fd.lat0 == 0:
-            ph = pQ.iloc[min(10, len(pQ)-1)]    # set the origin we use for all the conversions
-            fd.lng0, fd.lat0 = ph.lng, ph.lat
+            if lng0 == 0 and lat0 == 0:
+                ph = pQ.iloc[min(10, len(pQ)-1)]    # set the origin we use for all the conversions
+                fd.lng0, fd.lat0 = ph.lng, ph.lat
+            else:
+                fd.lng0, fd.lat0 = lng0, lat0
         lng0, lat0 = fd.lng0, fd.lat0
     earthrad = 6378137
     nyfac = 2*math.pi*earthrad/360
@@ -178,7 +183,8 @@ def processQaddrelEN(pQ, fd=None):
     
     pQmean = pQ.mean()
     lenpQ = len(pQ)
-    pQ = pQ[(abs(pQ.lat - pQmean.lat)<1) & (abs(pQ.lng - pQmean.lng)<1)]
+    u0, u1 = pQ.u.iloc[0], pQ.u.iloc[-1]
+    pQ = pQ[(abs(pQ.lat - pQmean.lat)<1) & (abs(pQ.lng - pQmean.lng)<1) & (pQ.u >= u0) & (pQ.u <= u1)]
     if lenpQ != len(pQ):
         print("despiked", lenpQ-len(pQ), "points from Q")
     return pQ
@@ -218,6 +224,10 @@ def linfuncAV(line):
     d = int(line[17:21], 16)
     return (t, v*0.01, d*0.1)
 
+def linfuncAU(lin):
+    t = int(lin[3:11], 16)
+    u = int(lin[12:18], 16)
+    return t, u
 
 
 recargsW = ('W', linfuncW, ["w", "n"]) 
@@ -238,6 +248,7 @@ recargsAF = ('aF', linfuncAF, ["Pr"])
 recargsAZ = ('aZ', linfuncAZ, ["q1", "q2", "q3"])
 recargsAQ = ('aQ', linfuncAQ, ["u", "lng", "lat", "alt"])
 recargsAV = ('aV', linfuncAV, ["vel", "deg"])
+recargsAU = ('aU', linfuncAU, ["b"]) 
 
 # Grab the function lookups from above (hacky, should put into own object)
 recargsDict = { }
@@ -247,7 +258,7 @@ for k, v in globals().copy().items():
         
 
 rectypes = 'DFLQRVWYZUCPHISGNMOBX*'
-phrectypes = set('FZQV')
+phrectypes = set('FZQVU')
 
 def GLoadIGC(fname):
     fin = open(fname, "rb")   # sometimes get non-ascii characters in the header
@@ -274,7 +285,25 @@ def GLoadIGC(fname):
             s = int(l[35:]) if len(l) >= 40 else 0
             recs.append((latminutes1000/60000, lngminutes1000/60000, int(l[25:30]), int(l[30:35]), s, utime*1000))
             tind.append(IGCdatetime0 + pandas.Timedelta(seconds=utime))
-    return pandas.DataFrame.from_records(recs, columns=["lat", "lng", "alt", "altb", "s", "u"], index=tind), hfcodes
+    w = pandas.DataFrame.from_records(recs, columns=["lat", "lng", "alt", "altb", "s", "u"], index=tind)
+    if max(w.alt) == 0:
+        w.drop(["alt"], 1, inplace=True)
+    if max(w.altb) == 0:
+        w.drop(["altb"], 1, inplace=True)
+    return w, hfcodes
+
+def GLoadRTKpos(fname): # made by RTKLIB as output
+    GPS_UTC_SECONDS_DIFFERENCE = -18
+    for sr, l in enumerate(open(fname)):
+        if l[0] != "%":
+            break
+    w = pandas.read_csv(fname, skiprows=sr-1, sep="\s+")
+    w.rename(columns={"latitude(deg)":"lat", "longitude(deg)":"lng", "height(m)":"alt"}, inplace=True)
+    w["time"] = pandas.to_datetime(w["%"]+" "+w["GPST"]) + pandas.Timedelta(seconds=GPS_UTC_SECONDS_DIFFERENCE)
+    w.drop(["%", "GPST"], 1, inplace=True)
+    w.set_index("time", inplace=True)
+    w.index.name = None
+    return w
 
 
 class FlyDat:
@@ -286,6 +315,9 @@ class FlyDat:
         self.t0, self.t1 = self.ft0, self.ft1
         self.Rdatetime0 = None   # approx UTC time of milliseconds=0, used to offset sensor timestamps to match GPS
         self.aRdatetime0 = None  # UTC time of milliseconds=0 used in android phone values
+        self.Rdatetime0byinterleave = None  # derived time on sensor from phone times 
+        self.pIGCs = [ ]
+        
         if fname and knowndate is None:
             mdate = re.search("\d\d\d\d-\d\d-\d\d", fname)
             if mdate:
@@ -303,18 +335,31 @@ class FlyDat:
         if self.fname is None:
             return
             
-            
         # initiating with IGC type
         if self.fname[-4:].lower() == ".igc":
             pIGC, hfcodes = GLoadIGC(self.fname)
             self.pIGC = processQaddrelEN(pIGC, self)
-            self.tstampmidnight = pandas.Timestamp(self.pIGC.index[0].date())
+            self.timestampmidnight = pandas.Timestamp(self.pIGC.index[0].date())
             self.ft0, self.ft1 = self.pIGC.index[0], self.pIGC.index[-1] 
             self.t0, self.t1 = self.ft0, self.ft1
             self.bIGConly = True
             self.pQ = self.pIGC
+            self.pIGCs.append(self.pIGC)
             return
-        
+            
+        # initiating with IGC type
+        if self.fname[-4:].lower() == ".pos":
+            pPOS = GLoadRTKpos(fname)
+            self.timestampmidnight = pandas.Timestamp(pPOS.index[0].date())
+            pPOS["u"] = (pPOS.index - self.timestampmidnight)/pandas.Timedelta(milliseconds=1)
+            self.pPOS = processQaddrelEN(pPOS, self)
+            self.ft0, self.ft1 = self.pPOS.index[0], self.pPOS.index[-1] 
+            self.t0, self.t1 = self.ft0, self.ft1
+            self.bIGConly = True
+            self.pQ = self.pPOS
+            self.pIGCs.append(self.pPOS)
+            return
+            
         self.bIGConly = False
         self.reccounts = dict((r, 0)  for r in rectypes)
         self.reccounts.update(dict(("a"+r, 0)  for r in phrectypes))
@@ -378,8 +423,12 @@ class FlyDat:
         if lc is not None:
             self.LoadC(lc)
         if self.t0 is None:
-            self.t0 = self.Rdatetime0byinterleave
-            print("Missing GPS data, so setting t0 to", self.Rdatetime0byinterleave)
+            if self.Rdatetime0byinterleave is not None:
+                self.t0 = self.Rdatetime0byinterleave
+                print("Missing GPS data, so setting t0 to", self.Rdatetime0byinterleave)
+            else:
+                self.t0 = pandas.Timestamp("2000-01-01")
+                print("No absolute time found", self.t0)
             
 
     def LoadLType(self, c, linfunc, columns):
@@ -420,10 +469,12 @@ class FlyDat:
             ld0 = self.Rdatetime0
         elif c == "Q":
             ld0 = self.timestampmidnight
-        else: 
+        elif self.Rdatetime0byinterleave: 
             if len(k) != 0:
                 print("Warning, using guessed (not GPS) timing corrected value on", c, len(k))
             ld0 = self.Rdatetime0byinterleave
+        else:
+            ld0 = pandas.Timestamp("2000-01-01")
             
         tsindex = pandas.DatetimeIndex(ld0 + pandas.Timedelta(milliseconds=dt)  for dt in k[:i,0])
         return pandas.DataFrame(k[:i,1:], columns=columns, index=tsindex)  # generate the dataframe from the numpy thing
@@ -447,32 +498,34 @@ class FlyDat:
             pC = self.LoadLType(*recargsDict["a"+c  if prevandroid else c])
             
             # reset the pQ type to use true GPS times in the u parameter, and improve the microcontroller timestamps offset
-            if pCattrname == 'aQ':
-                pC = processQaddrelEN(pC, self)
-                aQ = pC
-                aQ["t_ms"] = (aQ.index - self.aRdatetime0)/pandas.Timedelta(1e6)  # recover the original numbers
-                aQ["u"] = self.timestampmidnight + aQ.u*pandas.Timedelta(1e6)
-                aQ.set_index(["u"], inplace=True)
-                aQ.index.name = None
-                gpstimestampdiff = (aQ.index - self.timestampmidnight).astype(int)/1e6 - aQ.t_ms
-                gpstimestampdiff = gpstimestampdiff.to_series()
-                orgaRdatetime0 = self.aRdatetime0
-                #self.aRdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
-                print("Setting aRdatetime0 %s from %s with std %.2f" % (str(self.aRdatetime0), str(orgaRdatetime0), gpstimestampdiff.std()))
-                
             if pC.size != 0:
+                print("pCattrname", pCattrname)
+                if pCattrname == 'aQ':
+                    pC = processQaddrelEN(pC, self)
+                    aQ = pC
+                    aQ["t_ms"] = (aQ.index - self.aRdatetime0)/pandas.Timedelta(1e6)  # recover the original numbers
+                    aQ["T"] = self.timestampmidnight + aQ.u*pandas.Timedelta(1e6)
+                    aQ.set_index(["T"], inplace=True)
+                    aQ.index.name = None
+                    gpstimestampdiff = (aQ.index - self.timestampmidnight).astype(int)/1e6 - aQ.t_ms
+                    #gpstimestampdiff = gpstimestampdiff.to_series()
+                    orgaRdatetime0 = self.aRdatetime0
+                    self.aRdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
+                    print("Setting aRdatetime0 %s from %s with std %.2f" % (str(self.aRdatetime0), str(orgaRdatetime0), gpstimestampdiff.std()))
+                
                 if pCattrname == 'pQ':
                     pC = processQaddrelEN(pC, self)
                     pQ = pC
                     pQ["t_ms"] = (pQ.index - self.timestampmidnight)/pandas.Timedelta(1e6)  # recover the original numbers
-                    pQ["u"] = self.timestampmidnight + pQ.u*pandas.Timedelta(1e6)
-                    pQ.set_index(["u"], inplace=True)
+                    pQ["T"] = self.timestampmidnight + pQ.u*pandas.Timedelta(1e6)
+                    pQ.set_index(["T"], inplace=True)
                     pQ.index.name = None
 
                     # recalculate the Rdatetime0 by using the average offset
                     if pQ.size != 0:
-                        gpstimestampdiff = (pQ.index - self.timestampmidnight).astype(int)/1e6 - pQ.t_ms
-                        gpstimestampdiff = gpstimestampdiff.to_series()
+                        gpstimestampdiff = pQ.u - pQ.t_ms
+                        #gpstimestampdiff = gpstimestampdiff.to_series()
+                        gpstimestampdiff = gpstimestampdiff[numpy.abs(gpstimestampdiff - gpstimestampdiff.mean()) < 1000]  # filter spikes
                         self.Rdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
                         print("Setting new Rdatetime0 %s with std %.2f" % (str(self.Rdatetime0), gpstimestampdiff.std()))
                 
@@ -504,14 +557,19 @@ class FlyDat:
     def LoadIGC(self, fname):
         pIGC, hfcodes = GLoadIGC(fname)
         pIGC = processQaddrelEN(pIGC, self)
-        print("Made for IGC", len(pIGC))
-        if "pIGC" not in self.__dict__:
-            self.__setattr__("pIGC", pIGC)
-            print("setting fd.IGC")
-        else:
-            self.__setattr__("pIGC1", pIGC)
-            print("setting fd.IGC1")
+        self.pIGC = pIGC
+        self.pIGCs.append(self.pIGC)
         return pIGC
+        
+    def LoadPOS(self, fname):
+        pPOS = GLoadRTKpos(fname)
+        pPOS["u"] = (pPOS.index - self.timestampmidnight)/pandas.Timedelta(milliseconds=1)
+        pPOS = processQaddrelEN(pPOS, self)
+        self.pPOS = pPOS
+        if self.ft0 is None:
+            self.ft0, self.ft1 = pPOS.index[0], pPOS.index[-1]
+            self.t0, self.t1 = self.ft0, self.ft1
+        self.pIGCs.append(self.pPOS)
         
     def saveslicedfileforreplay(self, t0, t1, fname="REPLAY.TXT"):
         fout = open(fname, "w")

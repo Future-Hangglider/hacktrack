@@ -255,32 +255,55 @@ terraintiles = { }  # hfile: TerrainTile
 class TerrainPlot:
     def __init__(self, pQ, pixextra=20, tiledirectory="../hgtterrains"):
         lng, lat = pQ.iloc[0].lng, pQ.iloc[0].lat
-        hf = "%s%s.hgt" % (("S%.02d" % int(1-lat) if lat < 0 else "N%.02d" % int(lat)), ("W%.03d" % int(1-lng) if lng < 0 else "E%.03d" % int(lng)))
-        for hf in set(pQ.apply(lambda r: fhf(r.lng, r.lat), axis=1)):
+        hfs = set(pQ.apply(lambda r: fhf(r.lng, r.lat), axis=1))
+        for hf in hfs:
             if hf not in terraintiles:
                 terraintiles[hf] = TerrainTile(os.path.join(tiledirectory, hf))
 
-        self.terrX = terraintiles[fhf(pQ.iloc[0].lng, pQ.iloc[0].lat)]
+        self.terrXs = [ terraintiles[hf]  for hf in hfs ]
         self.lnglo, self.lnghi = min(pQ.lng), max(pQ.lng)
         self.latlo, self.lathi = min(pQ.lat), max(pQ.lat)
         
-        lngO, latO, sspix = self.terrX.lngO, self.terrX.latO, self.terrX.sspix
-        self.slng0, self.slng1 = int(max(0, (self.lnglo - lngO)*sspix-pixextra)), int(min((sspix+1), (self.lnghi - lngO)*sspix+pixextra))
-        self.slat0, self.slat1 = int(max(0, (self.latlo - latO)*sspix-pixextra)), int(min((sspix+1), (self.lathi - latO)*sspix+pixextra))
+        self.tXtrims = [ ]
+        for terrX in self.terrXs:
+            slng0, slng1 = int(max(0, (self.lnglo - terrX.lngO)*terrX.sspix-pixextra)), int(min((terrX.sspix+1), (self.lnghi - terrX.lngO)*terrX.sspix+pixextra))
+            slat0, slat1 = int(max(0, (self.latlo - terrX.latO)*terrX.sspix-pixextra)), int(min((terrX.sspix+1), (self.lathi - terrX.latO)*terrX.sspix+pixextra))
+            self.tXtrims.append((slng0, slng1, slat0, slat1))
         
     def plotterrain(self, plt):
         plt.figure(figsize=(11,11))
-        lngO, latO, sspix = self.terrX.lngO, self.terrX.latO, self.terrX.sspix
+        lngO, latO, sspix = self.terrXs[0].lngO, self.terrXs[0].latO, self.terrXs[0].sspix
+        (slng0, slng1, slat0, slat1) = self.tXtrims[0]
         plt.gcf().set_facecolor("white")
-        plt.imshow(self.terrX.terrX[(sspix+1)-self.slat1:(sspix+1)-self.slat0 , self.slng0:self.slng1])
+        plt.imshow(self.terrXs[0].terrX[(sspix+1)-slat1:(sspix+1)-slat0 , slng0:slng1])
+        #for terrXo in terrXs[1:]:
+        #    plt.imshow(self.terrX.terrX[(sspix+1)-self.slat1:(sspix+1)-self.slat0 , self.slng0:self.slng1])
+
+    def plotterrainlatlng(self, plt):
+        for i in range(len(self.terrXs)):
+            lngO, latO, sspix = self.terrXs[i].lngO, self.terrXs[i].latO, self.terrXs[i].sspix
+            (slng0, slng1, slat0, slat1) = self.tXtrims[i]
+            plt.imshow(self.terrXs[i].terrX[(sspix+1)-slat1:(sspix+1)-slat0, slng0:slng1], 
+                       extent=(slng0/sspix + lngO, slng1/sspix + lngO, -slat0/sspix - latO, -slat1/sspix - latO))        
+
+    def plotterrainxy(self, plt, fd):
+        for i in range(len(self.terrXs)):
+            lngO, latO, sspix = self.terrXs[i].lngO, self.terrXs[i].latO, self.terrXs[i].sspix
+            (slng0, slng1, slat0, slat1) = self.tXtrims[i]
+            plt.imshow(self.terrXs[i].terrX[(sspix+1)-slat1:(sspix+1)-slat0, slng0:slng1], 
+                       extent=((slng0/sspix + lngO - fd.lng0)*fd.exfac, (slng1/sspix + lngO - fd.lng0)*fd.exfac, 
+                               -(-slat0/sspix - latO + fd.lat0)*fd.nyfac, -(-slat1/sspix - latO + fd.lat0)*fd.nyfac))        
+
 
     def plotgps(self, plt, pQ, color):
-        lngO, latO, sspix = self.terrX.lngO, self.terrX.latO, self.terrX.sspix
-        plt.plot((pQ.lng-lngO)*sspix-self.slng0, self.slat1-(pQ.lat-latO)*sspix, color=color)
+        lngO, latO, sspix = self.terrXs[0].lngO, self.terrXs[0].latO, self.terrXs[0].sspix
+        (slng0, slng1, slat0, slat1) = self.tXtrims[0]
+        plt.plot((pQ.lng-lngO)*sspix-slng0, slat1-(pQ.lat-latO)*sspix, color=color)
 
     def scattergps(self, plt, pQ, color):
-        lngO, latO, sspix = self.terrX.lngO, self.terrX.latO, self.terrX.sspix
-        plt.scatter((pQ.lng-lngO)*sspix-self.slng0, self.slat1-(pQ.lat-latO)*sspix, color=color)
+        lngO, latO, sspix = self.terrXs[0].lngO, self.terrXs[0].latO, self.terrXs[0].sspix
+        (slng0, slng1, slat0, slat1) = self.tXtrims[0]
+        plt.scatter((pQ.lng-lngO)*sspix-slng0, slat1-(pQ.lat-latO)*sspix, color=color)
         
     def groundlevel(self, pQ):
         def gl(r):
