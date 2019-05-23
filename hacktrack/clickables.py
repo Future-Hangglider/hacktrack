@@ -12,15 +12,21 @@ from pandas.plotting import register_matplotlib_converters
 register_matplotlib_converters()
 
 
-def plotvalcolour(pQx, pQy, pval):
+def plotvalcolour(pQx, pQy, pval, badditional=False):
     points = numpy.array([pQx, pQy]).T.reshape(-1, 1, 2)
     segments = numpy.concatenate([points[:-1], points[1:]], axis=1)
     lc = LineCollection(segments, cmap=plt.get_cmap('cool'), norm=plt.Normalize(min(pval), max(pval)))
     lc.set_array(pval)
     cs = plt.gca().add_collection(lc)
-    plt.xlim(min(pQx), max(pQx))  # why is this necessary to set the dimensions?
-    plt.ylim(min(pQy), max(pQy))
-    plt.colorbar(cs)
+    if not badditional:
+        plt.xlim(min(pQx), max(pQx))  # why is this necessary to set the dimensions?
+        plt.ylim(min(pQy), max(pQy))
+        plt.colorbar(cs)
+    else:
+        xlo, xhi = plt.xlim()
+        plt.xlim(min(xlo, min(pQx)), max(xhi, max(pQx)))
+        ylo, yhi = plt.ylim()
+        plt.ylim(min(ylo, min(pQy)), max(yhi, max(pQy)))
 
 def plotwhiskers(pQx, pQy, vel, deg, velfac, col):
     spQx = pQx.iloc[::int(len(pQx)/500+1)]
@@ -39,16 +45,19 @@ def plotwhiskers(pQx, pQy, vel, deg, velfac, col):
     plt.gca().add_collection(lc)
     
 def CalcVario(fd):
-    fd.LoadC("F")
+    fd.LoadA("F")
     pF = fd.pF
-    if len(pF) == 0:
-        fd.LoadC("aF")
-        pF = fd.aF
     baro = pF[fd.t0-pandas.Timedelta(seconds=30):fd.t1+pandas.Timedelta(seconds=30)].Pr
     timestep = numpy.mean((baro.index[1:]-baro.index[:-1]).astype(int)*1e-9)
     fbaro = utils.FiltFiltButter(baro, f=0.01, n=3)
     vario = fbaro.diff()*(-0.09/timestep)
     return vario.dropna()
+
+def CalcVarioA(alt, varioFfilter):
+    vario = alt.diff()/(alt.index.to_series().diff()/pandas.Timedelta(seconds=1))
+    vario = vario.dropna()
+    fvario = utils.FiltFiltButter(vario, f=varioFfilter, n=3)
+    return fvario
 
     
 outputfigure = None
@@ -62,37 +71,44 @@ def rescaletsval(val, brescale, lo=None, hi=None):
     return (val - (hi+lo)/2)*(2/(hi-lo))
 
 
-def plottimeseriesAlt(hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, fd):
+def plottimeseriesAlt(hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, secos, fd):
     plt.figure(figsize=(13,8))
-    pQ = fd.pQ[fd.t0:fd.t1]
-    if fd.bIGConly:
-        if pQ.get("altb") is not None:
-            plt.plot(pQ.altb, label="barometric alt")  # pQ === pIGC
-        if pQ.get("alt") is not None:
-            plt.plot(pQ.alt, label="gps alt")
-    else:
-        fd.LoadC("F")
-        baro = fd.pF[fd.t0:fd.t1].Pr
-        if len(fd.pQ):
-            balt = utils.BaroToAltComplete(baro, pQ.alt, gpsoffset=None, plt=None)
-            plt.plot(pQ.alt, label="GPS altitude")
+    if secos != 'POS only':
+        pQ = fd.pQ[fd.t0:fd.t1]
+        if fd.bnoLOG:
+            if pQ.get("altb") is not None:
+                plt.plot(pQ.altb, label="barometric alt")  # pQ === pIGC
+            if pQ.get("alt") is not None:
+                plt.plot(pQ.alt, label="gps alt")
         else:
-            balt = (102726 - baro)*0.037867
-        plt.plot(balt, label="barometric alt")
-        if hasattr(fd, "aF"):
-            aQ = fd.aQ[fd.t0:fd.t1]
-            baroA = fd.pF[fd.t0:fd.t1].Pr
+            fd.LoadA("F")
+            baro = fd.pF[fd.t0:fd.t1].Pr
             if len(fd.pQ):
-                baltA = utils.BaroToAltComplete(baroA, aQ.alt, gpsoffset=None, plt=None)
-                plt.plot(aQ.alt, label="GPSA altitude")
+                balt = utils.BaroToAltComplete(baro, pQ.alt, gpsoffset=None, plt=None)
+                plt.plot(pQ.alt, label="GPS altitude")
             else:
-                baltA = (102726 - baro)*0.037867
-            plt.plot(baltA, label="barometricA alt")
+                balt = (102726 - baro)*0.037867
+            plt.plot(balt, label="barometric alt")
+            if hasattr(fd, "aF") and (fd.aF is not fd.pF):
+                aQ = fd.aQ[fd.t0:fd.t1]
+                baroA = fd.pF[fd.t0:fd.t1].Pr
+                if len(fd.pQ):
+                    baltA = utils.BaroToAltComplete(baroA, aQ.alt, gpsoffset=None, plt=None)
+                    plt.plot(aQ.alt, label="GPSA altitude")
+                else:
+                    baltA = (102726 - baro)*0.037867
+                plt.plot(baltA, label="barometricA alt")
+                
+    if secos == 'POS only' or secos == 'all GPS':
+        for llpQ in fd.pPOSs:
+            lpQ = llpQ[fd.t0:fd.t1]
+            plt.plot(lpQ.alt+100, label="GPS POS altitude")
+                
     plt.gca().xaxis.tick_top()
     plt.legend()
     #plt.show()
     
-def plottimeseriesG(hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, fd):
+def plottimeseriesG(hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, secos, fd):
     plt.figure(figsize=(13,8))
     
     cbcount = cbvario + cbaccellerations + cborientations + cbhangspot
@@ -101,13 +117,21 @@ def plottimeseriesG(hangspottimeslider, cbvario, cbaccellerations, cborientation
         cbvario = True
     brescale = (cbcount >= 2)  # more than one value; so scale them all
     nplots = 0
-    if cbvario and not fd.bIGConly:
-        vario = CalcVario(fd)
-        vario = rescaletsval(vario, brescale)
-        plt.plot(vario, label="Vario")
-        nplots += 1
+    if cbvario and not fd.bnoLOG:
+        if secos != 'POS only':
+            vario = CalcVario(fd)
+            vario = rescaletsval(vario, brescale)
+            plt.plot(vario, label="Vario")
+            nplots += 1
+    if secos == 'POS only' or secos == 'all GPS':
+        for llpQ in fd.pPOSs:
+            lpQ = llpQ[fd.t0:fd.t1]
+            vario = CalcVarioA(lpQ.alt, fd.varioFfilter)
+            vario = rescaletsval(vario, brescale)
+            plt.plot(vario, label="Vario A")
+            nplots += 1
         
-    if (cbaccellerations or cborientations) and not fd.bIGConly:
+    if (cbaccellerations or cborientations) and not fd.bnoLOG:
         fd.LoadC("Z")
         pZ = fd.pZ[fd.t0:fd.t1]
         if cbaccellerations:
@@ -143,7 +167,7 @@ def plottimeseriesG(hangspottimeslider, cbvario, cbaccellerations, cborientation
 
     
 def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy, 
-               hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, 
+               hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, secos, 
                fd):
     if outputfigure:
         outputfigure.layout.height = figureheight
@@ -156,33 +180,49 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy
     # timewise plots
     if colos[:1] == "T":
         if colos == "TZ":
-            plottimeseriesAlt(hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, fd)
-        else:
-            plottimeseriesG(hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, fd)
+            plottimeseriesAlt(hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, secos, fd)
+        else:  # "TSeries"
+            plottimeseriesG(hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, secos, fd)
         return
 
-    if colos == "terrain":
-        pQ = fd.pQ[fd.t0:fd.t1]
-        tp = utils.TerrainPlot(pQ, tiledirectory="/home/julian/hgstuff/hgtterrains")
-        tp.plotterrainxy(plt, fd)
-        plt.plot(pQ.x, pQ.y, color="magenta")
-        return
     
     # xy plots
-    plt.figure(figsize=(8,8))
+    plt.figure(figsize=(11, 11))
+    plt.subplot(111, aspect="equal")
     plt.gca().xaxis.tick_top()
 
-    pQ = fd.pQ[fd.t0:fd.t1]
+    pQs = [ ]
+    if secos != "POS only":
+        pQs.append(fd.pQ[fd.t0:fd.t1])
+    if secos == 'all GPS':
+        for llpQ in fd.pIGCs:
+            if llpQ is not fd.pQ:
+                pQs.append(llpQ[fd.t0:fd.t1])
+    if secos == 'POS only' or secos == 'all GPS':
+        for llpQ in fd.pPOSs:
+            if llpQ is not fd.pQ:
+                pQs.append(llpQ[fd.t0:fd.t1])
+    
+    
+    pQ = pQs[0]
+    if secos == "terrain":
+        print("terrain")
+        tp = utils.TerrainPlot(pQ, tiledirectory="/home/julian/hgstuff/hgtterrains")
+        tp.plotterrainxy(plt, fd)
+
     if wx == 0 and wy == 0:
         pQx, pQy = pQ.x, pQ.y
     else:  # wind added
         ts = (pQ.index - fd.t0).astype(int)*1e-9
         pQx, pQy = pQ.x - ts*wx, pQ.y - ts*wy
     
-    plt.subplot(111, aspect="equal")
     if colos == "altitude":
-        plotvalcolour(pQx, pQy, pQ.alt)
+        alt = pQ.alt if "alt" in pQ.columns else pQ.altb
+        plotvalcolour(pQx, pQy, alt)
         plt.scatter(pQx.iloc[-2:], pQy.iloc[-2:])
+        for lpQ in pQs[1:]:
+            alt = lpQ.alt if "alt" in lpQ.columns else lpQ.altb
+            plotvalcolour(lpQ.x, lpQ.y, alt, True)
         
     elif colos == "velocity":
         # warning, velocity not changed by wind vector
@@ -209,6 +249,8 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy
     else:  # XY case
         plt.plot(pQx, pQy)
         plt.scatter(pQx.iloc[-5:], pQy.iloc[-5:])
+        for lpQ in pQs[1:]:
+            plt.plot(lpQ.x, lpQ.y)
     
     if velwhisker != 0:
         # warning, velocity not changed by wind vector
@@ -233,22 +275,21 @@ def plotinteractivegpstrack(fd):
     dtslider = widgets.FloatSlider(description="minutes", value=3, step=1/60, max=dtminutes, continuous_update=False)
     figureheightSelection = widgets.SelectionSlider(options=['300px', '400px', '500px', '600px', '800px'], value='400px', description='display height', continuous_update=False)
 
-    coloptions = widgets.Dropdown(options=['Tseries', 'TZ', 'XY', 'altitude', 'velocity', 'vario', 'YZ', 'terrain'])
+    coloptions = widgets.Dropdown(options=['Tseries', 'TZ', 'XY', 'altitude', 'velocity', 'vario', 'YZ'])
 
     cbvario = widgets.Checkbox(description="vario", value=False, indent=False)
     cbaccellerations = widgets.Checkbox(description="accel", value=False, indent=False)
     cborientations = widgets.Checkbox(description="orient", value=False, indent=False)
     cbhangspot = widgets.Checkbox(description="hangspot", value=False, indent=False)
 
-    #cbaccellerations.layout.width = cbvario.layout.width = "60px"  # causes overlaps and doesn't work.  needs more looking at
-
     hangspottimeslider = widgets.FloatSlider(description="hangspot_t", step=0.01, min=-10, max=10, start=0, continuous_update=False)
+    secoptions = widgets.Dropdown(options=['blank', 'terrain', 'all GPS', 'POS only'])
 
     velwhisker = widgets.IntSlider(min=0, max=5, description="velocity whiskers", continuous_update=False)
     headingwhisker = widgets.IntSlider(min=0, max=5, description="heading whiskers", continuous_update=False)
 
-    windxslider = widgets.FloatSlider(description="windx", step=0.01, min=-10, max=10, start=0, continuous_update=False)
-    windyslider = widgets.FloatSlider(description="windy", step=0.01, min=-10, max=10, start=0, continuous_update=False)
+    windxslider = widgets.FloatSlider(description="windx", step=0.01, min=-10, max=10, start=0, continuous_update=False, indent=False)
+    windyslider = widgets.FloatSlider(description="windy", step=0.01, min=-10, max=10, start=0, continuous_update=False, indent=False)
 
     # build up the panels of components
     uipaneleft = widgets.VBox([t0slider, dtslider, t0t1Label, figureheightSelection])
@@ -256,8 +297,9 @@ def plotinteractivegpstrack(fd):
     uicboxes = widgets.HBox([cbvario, cbaccellerations, cborientations, cbhangspot])
     uipaneright = widgets.VBox([uicboxes, coloptions, velwhisker, headingwhisker], layout=widgets.Layout(width=scolwidth))
     
-    uicboxes2 = widgets.HBox([])
+    uicboxes2 = widgets.HBox([secoptions])
     uipanefarright = widgets.VBox([windxslider, windyslider, uicboxes2, hangspottimeslider])
+    
     
     ui = widgets.HBox([uipaneleft, uipaneright, uipanefarright])
 
@@ -266,7 +308,7 @@ def plotinteractivegpstrack(fd):
               "colos":coloptions, 
               "figureheight":figureheightSelection, 
               "wx":windxslider, "wy":windyslider, "hangspottimeslider":hangspottimeslider, 
-              "cbvario":cbvario, "cbaccellerations":cbaccellerations, "cborientations":cborientations, "cbhangspot":cbhangspot, 
+              "cbvario":cbvario, "cbaccellerations":cbaccellerations, "cborientations":cborientations, "cbhangspot":cbhangspot, "secos":secoptions, 
               'fd':widgets.fixed(fd) }
     outputfigure = widgets.interactive_output(plotfigure, params)
     outputfigure.layout.height = '400px'

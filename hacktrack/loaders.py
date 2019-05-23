@@ -299,8 +299,13 @@ def GLoadRTKpos(fname): # made by RTKLIB as output
             break
     w = pandas.read_csv(fname, skiprows=sr-1, sep="\s+")
     w.rename(columns={"latitude(deg)":"lat", "longitude(deg)":"lng", "height(m)":"alt"}, inplace=True)
-    w["time"] = pandas.to_datetime(w["%"]+" "+w["GPST"]) + pandas.Timedelta(seconds=GPS_UTC_SECONDS_DIFFERENCE)
-    w.drop(["%", "GPST"], 1, inplace=True)
+    if 'UTC' in w.columns:
+        w["time"] = pandas.to_datetime(w["%"]+" "+w["UTC"])
+        w.drop(["%", "UTC"], 1, inplace=True)
+    else:
+        w["time"] = pandas.to_datetime(w["%"]+" "+w["GPST"]) + pandas.Timedelta(seconds=GPS_UTC_SECONDS_DIFFERENCE)
+        w.drop(["%", "GPST"], 1, inplace=True)
+    w["sd"] = numpy.sqrt(w["sdn(m)"]**2 + w["sde(m)"]**2 + w["sdu(m)"]**2)
     w.set_index("time", inplace=True)
     w.index.name = None
     return w
@@ -317,6 +322,8 @@ class FlyDat:
         self.aRdatetime0 = None  # UTC time of milliseconds=0 used in android phone values
         self.Rdatetime0byinterleave = None  # derived time on sensor from phone times 
         self.pIGCs = [ ]
+        self.pPOSs = [ ]
+        self.varioFfilter = 0.02
         
         if fname and knowndate is None:
             mdate = re.search("\d\d\d\d-\d\d-\d\d", fname)
@@ -342,7 +349,7 @@ class FlyDat:
             self.timestampmidnight = pandas.Timestamp(self.pIGC.index[0].date())
             self.ft0, self.ft1 = self.pIGC.index[0], self.pIGC.index[-1] 
             self.t0, self.t1 = self.ft0, self.ft1
-            self.bIGConly = True
+            self.bnoLOG = True
             self.pQ = self.pIGC
             self.pIGCs.append(self.pIGC)
             return
@@ -355,12 +362,13 @@ class FlyDat:
             self.pPOS = processQaddrelEN(pPOS, self)
             self.ft0, self.ft1 = self.pPOS.index[0], self.pPOS.index[-1] 
             self.t0, self.t1 = self.ft0, self.ft1
-            self.bIGConly = True
+            self.bnoLOG = True
             self.pQ = self.pPOS
-            self.pIGCs.append(self.pPOS)
+            self.pPOSs.append(self.pPOS)
             return
             
-        self.bIGConly = False
+        # load the log file
+        self.bnoLOG = False
         self.reccounts = dict((r, 0)  for r in rectypes)
         self.reccounts.update(dict(("a"+r, 0)  for r in phrectypes))
 
@@ -420,8 +428,9 @@ class FlyDat:
             print("linAdifftime", linAdiffsum/linAdiffcount, "count", linAdiffcount)
             self.Rdatetime0byinterleave = self.aRdatetime0 + pandas.Timedelta(milliseconds=linAdiffsum/linAdiffcount)
         
-        if lc is not None:
-            self.LoadC(lc)
+        if lc is not None and lc:
+            nloaded = self.LoadA(lc)
+                
         if self.t0 is None:
             if self.Rdatetime0byinterleave is not None:
                 self.t0 = self.Rdatetime0byinterleave
@@ -485,15 +494,18 @@ class FlyDat:
             print("Specify which data to load")
             for r, n in self.reccounts.items():
                 print("%s(n=%d) %s" % (r, n, recargsDict.get(r, ["","","unknown"])[2]))
-            return
+            return 0
         
         prevandroid = False
+        nloaded = 0
         for c in lc:
             if c == "a":
                 prevandroid = True
                 continue
             pCattrname = ("a" if prevandroid else "p")+c
             if hasattr(self, pCattrname):
+                if len(self.__getattribute__(pCattrname)) != 0:
+                    nloaded += 1
                 continue
             pC = self.LoadLType(*recargsDict["a"+c  if prevandroid else c])
             
@@ -552,6 +564,21 @@ class FlyDat:
                 pC = processZquatA(pC)
 
             self.__setattr__(pCattrname, pC)
+            if len(pC) != 0:
+                nloaded += 1
+            return nloaded
+
+    def LoadA(self, lc):
+        nloaded = self.LoadC(lc)
+        if lc[0] != "p" and nloaded == 0:
+            print("Loading a%s as no p%s records" % (lc, lc))
+            self.LoadC("a"+lc)
+            if "Q" in lc:
+                self.pQ = self.aQ
+            if "F" in lc:
+                self.pF = self.aF
+            if "Z" in lc:
+                self.pF = self.aF
 
 
     def LoadIGC(self, fname):
@@ -569,7 +596,7 @@ class FlyDat:
         if self.ft0 is None:
             self.ft0, self.ft1 = pPOS.index[0], pPOS.index[-1]
             self.t0, self.t1 = self.ft0, self.ft1
-        self.pIGCs.append(self.pPOS)
+        self.pPOSs.append(self.pPOS)
         
     def saveslicedfileforreplay(self, t0, t1, fname="REPLAY.TXT"):
         fout = open(fname, "w")
