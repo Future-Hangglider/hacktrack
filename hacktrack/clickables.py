@@ -109,8 +109,9 @@ def plottimeseriesAlt(hangspottimeslider, cbvario, cbaccellerations, cborientati
     #plt.show()
     
 def plottimeseriesG(hangspottimeslider, cbvario, cbaccellerations, cborientations, cbhangspot, secos, fd):
-    plt.figure(figsize=(13,8))
-    
+    fig = plt.figure(figsize=(13,8))
+    fig.patch.set_facecolor('white')
+
     cbcount = cbvario + cbaccellerations + cborientations + cbhangspot
     print("cbcount", cbcount)
     if cbcount == 0:
@@ -187,7 +188,9 @@ def plotfigure(t0s, dts, colos, figureheight, velwhisker, headingwhisker, wx, wy
 
     
     # xy plots
-    plt.figure(figsize=(11, 11))
+    fig = plt.figure(figsize=(11, 11))
+    fig.patch.set_facecolor('white')
+
     plt.subplot(111, aspect="equal")
     plt.gca().xaxis.tick_top()
 

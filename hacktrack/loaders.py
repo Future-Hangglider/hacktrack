@@ -6,10 +6,6 @@ import datetime, math, re
 def linfuncF(lin):
     t = int(lin[2:10], 16)
     p = int(lin[11:17], 16)
-    if p > 110000:
-        p = 100000
-    if p < 80000:  # despikes
-        p = 100000
     return t, p
     
 def s16(sx):  
@@ -28,8 +24,8 @@ def linfuncZ(line):
 
 def processZquat(pZ):
     pZ["iqsq"] = 1/((pZ.q0**2 + pZ.q1**2 + pZ.q2**2 + pZ.q3**2))  # quaternion unit factor
-    pZ["roll"] = numpy.degrees(numpy.arcsin((pZ.q2*pZ.q3 + pZ.q0*pZ.q1)*2 * pZ.iqsq))
-    pZ["pitch"] = numpy.degrees(numpy.arcsin((pZ.q1*pZ.q3 - pZ.q0*pZ.q2)*2 * pZ.iqsq))
+    pZ["pitch"] = numpy.degrees(numpy.arcsin((pZ.q2*pZ.q3 + pZ.q0*pZ.q1)*2 * pZ.iqsq))
+    pZ["roll"] = numpy.degrees(numpy.arcsin((pZ.q1*pZ.q3 - pZ.q0*pZ.q2)*2 * pZ.iqsq))
     a00 = (pZ.q0**2 + pZ.q1**2)*2 * pZ.iqsq - 1
     a01 = (pZ.q1*pZ.q2 + pZ.q0*pZ.q3)*2 * pZ.iqsq
     heading = 180 - numpy.degrees(numpy.arctan2(a00, -a01))
@@ -183,8 +179,7 @@ def processQaddrelEN(pQ, fd=None):
     
     pQmean = pQ.mean()
     lenpQ = len(pQ)
-    u0, u1 = pQ.u.iloc[0], pQ.u.iloc[-1]
-    pQ = pQ[(abs(pQ.lat - pQmean.lat)<1) & (abs(pQ.lng - pQmean.lng)<1) & (pQ.u >= u0) & (pQ.u <= u1)]
+    pQ = pQ[(abs(pQ.lat - pQmean.lat)<1) & (abs(pQ.lng - pQmean.lng)<1)]
     if lenpQ != len(pQ):
         print("despiked", lenpQ-len(pQ), "points from Q")
     return pQ
@@ -477,7 +472,7 @@ class FlyDat:
         elif self.Rdatetime0 is not None:
             ld0 = self.Rdatetime0
         elif c == "Q":
-            ld0 = self.timestampmidnight
+            ld0 = self.timestampmidnight   # incorrect midnight offset worked on later when Rdatetime0 gets set
         elif self.Rdatetime0byinterleave: 
             if len(k) != 0:
                 print("Warning, using guessed (not GPS) timing corrected value on", c, len(k))
@@ -486,7 +481,11 @@ class FlyDat:
             ld0 = pandas.Timestamp("2000-01-01")
             
         tsindex = pandas.DatetimeIndex(ld0 + pandas.Timedelta(milliseconds=dt)  for dt in k[:i,0])
-        return pandas.DataFrame(k[:i,1:], columns=columns, index=tsindex)  # generate the dataframe from the numpy thing
+        res = pandas.DataFrame(k[:i,1:], columns=columns, index=tsindex)  # generate the dataframe from the numpy thing
+        if c == "Q":
+            res["t_ms"] = k[:i,0]
+        return res
+        
     
     def LoadC(self, lc=None):
         "Load category of flight data: DFLQRVWYZUCPHISGNMOBX"
@@ -507,7 +506,9 @@ class FlyDat:
                 if len(self.__getattribute__(pCattrname)) != 0:
                     nloaded += 1
                 continue
-            pC = self.LoadLType(*recargsDict["a"+c  if prevandroid else c])
+
+            Lc, linfunc, columns = recargsDict["a"+c  if prevandroid else c]
+            pC = self.LoadLType(Lc, linfunc, columns)
             
             # reset the pQ type to use true GPS times in the u parameter, and improve the microcontroller timestamps offset
             if pC.size != 0:
@@ -516,8 +517,8 @@ class FlyDat:
                     pC = processQaddrelEN(pC, self)
                     aQ = pC
                     aQ["t_ms"] = (aQ.index - self.aRdatetime0)/pandas.Timedelta(1e6)  # recover the original numbers
-                    aQ["T"] = self.timestampmidnight + aQ.u*pandas.Timedelta(1e6)
-                    aQ.set_index(["T"], inplace=True)
+                    aQ["uT"] = self.timestampmidnight + aQ.u*pandas.Timedelta(1e6)
+                    aQ.set_index(["uT"], inplace=True)
                     aQ.index.name = None
                     gpstimestampdiff = (aQ.index - self.timestampmidnight).astype(int)/1e6 - aQ.t_ms
                     #gpstimestampdiff = gpstimestampdiff.to_series()
@@ -526,20 +527,40 @@ class FlyDat:
                     print("Setting aRdatetime0 %s from %s with std %.2f" % (str(self.aRdatetime0), str(orgaRdatetime0), gpstimestampdiff.std()))
                 
                 if pCattrname == 'pQ':
-                    pC = processQaddrelEN(pC, self)
                     pQ = pC
-                    pQ["t_ms"] = (pQ.index - self.timestampmidnight)/pandas.Timedelta(1e6)  # recover the original numbers
-                    pQ["T"] = self.timestampmidnight + pQ.u*pandas.Timedelta(1e6)
-                    pQ.set_index(["T"], inplace=True)
-                    pQ.index.name = None
+                    pQ["uT"] = self.timestampmidnight + pQ.u*pandas.Timedelta(1e6)
+                    pQ = processQaddrelEN(pC, self)
 
-                    # recalculate the Rdatetime0 by using the average offset
+                    # recalculate the Rdatetime0 by using the average offset, removing any outliers, made complicated by the outliers pulling the mean far away
+                    # (Possibly bad values from corrupt data of bluefly badly interleaving GPS and PRS data without enough checksum checking)
                     if pQ.size != 0:
-                        gpstimestampdiff = pQ.u - pQ.t_ms
-                        #gpstimestampdiff = gpstimestampdiff.to_series()
-                        gpstimestampdiff = gpstimestampdiff[numpy.abs(gpstimestampdiff - gpstimestampdiff.mean()) < 1000]  # filter spikes
-                        self.Rdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff.mean()*1e6)
-                        print("Setting new Rdatetime0 %s with std %.2f" % (str(self.Rdatetime0), gpstimestampdiff.std()))
+                        gpstimestampdiff1 = pQ.u - pQ.t_ms
+                        gpstimestampdiff1mean = gpstimestampdiff1.mean()
+                        gpstimestampdiff1meandiff = (gpstimestampdiff1 - gpstimestampdiff1mean).values
+                        gpstimestampdiff1meandiff.sort()
+                        nthird = len(gpstimestampdiff1meandiff)//3
+                        gpstimestampdiff1meandiffmean = gpstimestampdiff1meandiff[nthird:-nthird].mean()
+                        gpstimestampdiff2 = gpstimestampdiff1[numpy.abs(gpstimestampdiff1 - gpstimestampdiff1mean - gpstimestampdiff1meandiffmean) < 1000]  # filter spikes
+                        gpstimestampdiff2mean = gpstimestampdiff2.mean()
+                        gpstimestampdiff1mean, gpstimestampdiff2mean
+
+                        self.Rdatetime0 = self.timestampmidnight + pandas.Timedelta(gpstimestampdiff2mean*1e6)
+                        print("Setting new Rdatetime0 %s with std %.2f" % (str(self.Rdatetime0), gpstimestampdiff2.std()))
+                        
+                        Qudiff = abs(gpstimestampdiff1 - gpstimestampdiff2mean)
+                        pQ = pQ[Qudiff<200]  # really filter any disagreement between microtime and GPS time of more than 200ms
+                        
+                        Ndiscards, Nbacktimes = len(pC) - len(pQ), sum(pQ.u.diff()<0)
+                        if Ndiscards:
+                            print("Discarding %d points due to time/GPStime disagreements" % Ndiscards)
+                        if Nbacktimes:
+                            print("Warning %d points go back in GPStime" % Nbacktimes)
+                        
+                        pQ.set_index(["uT"], inplace=True)
+                        pQ.index.name = None
+
+                    pC = pQ
+                    
                 
                 if self.ft0 is None:
                     self.ft0, self.ft1 = pC.index[0], pC.index[-1]

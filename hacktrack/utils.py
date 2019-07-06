@@ -74,6 +74,14 @@ def FiltFiltButter(s, f=0.004, n=3):
     res = scipy.signal.filtfilt(b, a, s)
     return pandas.Series(res, s.index)
     
+def despikebysmoothfilter(pC, ky, f=0.05, stdfac=5):
+    pCv = pC[ky]
+    pCvf = FiltFiltButter(pCv, f=f, n=3)
+    pCvdiff = pCv - pCvf
+    pCvdiffmean, pCvdiffstd = pCvdiff.mean(), pCvdiff.std()
+    pCf = pC[abs(pCvdiff-pCvdiffmean) < pCvdiffstd*stdfac]
+    print("dropping %d points" % (len(pC) - len(pCf)))
+    return pCf
 
 def ValueHistPlot(s):
     "Plot quantized histogram"
