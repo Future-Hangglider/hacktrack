@@ -44,7 +44,7 @@ def frameselectinteractive(cap):
     frameheight, framewidth = cap.get(cv2.CAP_PROP_FRAME_HEIGHT), cap.get(cv2.CAP_PROP_FRAME_WIDTH)
     framecount = cap.get(cv2.CAP_PROP_FRAME_COUNT)
     
-    WframenumberR.min, WframenumberR.max = 0, framecount-1
+    WframenumberR.min, WframenumberR.max = 1, framecount
     WframenumberR.value = (framecount//2, framecount)
     Wledxselrange.min, Wledxselrange.max = 0, framewidth
     Wledxselrange.value = (framewidth//3, 2*framewidth//3)
@@ -59,47 +59,21 @@ def frameselectinteractive(cap):
 
 def extractledflashframes(cap):
     framenumberR = WframenumberR.value
-    print(framenumberR)
-    ledxselrange, ledyselrange = Wledxselrange.value, Wledyselrange.value
-    framenums = [ ]
-    rmeans, gmeans, bmeans = [ ], [ ], [ ]
-    framenum = framenumberR[0]
-    cap.set(cv2.CAP_PROP_POS_FRAMES, framenum)
-    while framenum < framenumberR[1]:
-        flag, frame = cap.read()
-        x = frame[ledxselrange[0]:ledxselrange[1], ledyselrange[0]:ledyselrange[1]]
-        framenums.append(framenum)
-        rmeans.append(x[:,:,0].mean())
-        gmeans.append(x[:,:,1].mean())
-        bmeans.append(x[:,:,2].mean())
-        if (framenum%1000) == 0:
-            print(framenum)
-        framenum = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-    return pandas.DataFrame(data={"r":rmeans, "g":gmeans, "b":bmeans}, index=framenums)
-    
-def extractledflashframesF(cap):
-    framenumberR = WframenumberR.value
-    print(framenumberR)
+    print("scanning between frames", framenumberR)
     ledxselrange, ledyselrange = Wledxselrange.value, Wledyselrange.value
     
     vals = [ ]
-    framenum = framenumberR[0]
-    cap.set(cv2.CAP_PROP_POS_FRAMES, framenum)
-    while framenum < framenumberR[1]:
-        flag, frame = cap.read()
-        x = frame[ledxselrange[0]:ledxselrange[1], ledyselrange[0]:ledyselrange[1]]
-        val = { "framenum":framenum, "r":x[:,:,0].mean(), "g":x[:,:,1].mean(), "b":x[:,:,2].mean() }
-        
-        corners, ids, rejectedImgPoints = cv2.aruco.detectMarkers(frame, aruco_dict, parameters=parameters, cameraMatrix=mtx, distCoeff=dist)
-        if ids is not None:
-            for idd, corner in zip(ids, corners):
-                val["fx%d"%idd[0]] = corner[0][:,0].mean()
-                val["fy%d"%idd[0]] = corner[0][:,1].mean()
-        vals.append(val)
-        
+    cap.set(cv2.CAP_PROP_POS_FRAMES, framenumberR[0]-1)
+    while True:
+        flag, frame = cap.read()   # advances then retrieves
+        if not flag:                      break
+        framenum = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        if framenum > framenumberR[1]:   break
         if (framenum%1000) == 0:
             print(framenum)
-        framenum = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        x = frame[ledyselrange[0]:ledyselrange[1], ledxselrange[0]:ledxselrange[1]]
+        val = { "framenum":framenum, "b":x[:,:,0].mean(), "g":x[:,:,1].mean(), "r":x[:,:,2].mean() }   # BGR
+        vals.append(val)
     ledbrights = pandas.DataFrame.from_dict(vals)
     ledbrights.set_index("framenum", inplace=True)
     ledbrights.index.name = None
@@ -113,30 +87,36 @@ def extractledflashframesF(cap):
 
 
 def framestotime(videoledonvalues, ledswitchtimes):
+    # find ratios of subsequent on moments
     videoledonframes = videoledonvalues&(True^videoledonvalues.shift())
     videoledonframesI = videoledonvalues.index.to_series()[videoledonframes]
     videoledonframedurations = videoledonframesI.diff().iloc[1:]
-    videoledondurationratios = (videoledonframedurations/videoledonframedurations.shift(1)).iloc[1:]
+    vr = (videoledonframedurations/videoledonframedurations.shift(1)).iloc[1:]
 
     ledontimes = ledswitchtimes.index.to_series()[ledswitchtimes]
     ledondurations = ledontimes.diff().iloc[1:]/pandas.Timedelta(seconds=1)
-    ledondurationratios = (ledondurations/ledondurations.shift(1)).iloc[1:]
+    lr = (ledondurations/ledondurations.shift(1)).iloc[1:]
 
-    ledondurationratiosV = ledondurationratios.values
-    videoledondurationratiosV = videoledondurationratios.values
+    lrV = lr.values
+    vrV = vr.values
 
-    #videoledondurationratiosV = videoledondurationratiosV[-61:]
-    k = [ ]
-    for i in range(len(ledondurationratiosV) - len(videoledondurationratiosV)):
-        s = sum(abs(ledondurationratiosV[i:i+len(videoledondurationratiosV)] - videoledondurationratiosV))
-        k.append((s, i))
+    # overlap and find differences
+    k = [ ] 
+    for i in range(-(len(lrV)-1), len(vrV)):
+        llrV = lrV[max(-i,0):len(lrV)+min(0,-i)]
+        lvrV = vrV[max(0,i):len(vrV)+min(i,0)]
+        assert len(llrV) == len(lvrV)
+        s = sum(abs(llrV - lvrV))
+        if len(llrV) >= 2:
+            k.append((s/len(llrV), i, len(llrV)))
+
     s = min(k)
-    
     i = s[1]
-    ledalignment = pandas.DataFrame(ledondurationratios.iloc[i:i+len(videoledondurationratios)], columns=["ledondurationratios"])
-    #videoledondurationratios
-    ledalignment["videoledondurationratiosV"] = videoledondurationratiosV
-    ledalignment["videoledondurationratiosI"] = videoledondurationratios.index
+
+    # interpolate and re-align
+    ledalignment = pandas.DataFrame(lr.iloc[max(-i,0):len(lrV)+min(0,-i)], columns=["ledondurationratios"])
+    ledalignment["videoledondurationratiosV"] = vrV[max(0,i):len(vrV)+min(i,0)]
+    ledalignment["videoledondurationratiosI"] = vr.index[max(0,i):len(vrV)+min(i,0)]
 
     #ledalignment.videoledondurationratiosI.values
     #plt.plot(ledalignment.videoledondurationratiosI.values)
