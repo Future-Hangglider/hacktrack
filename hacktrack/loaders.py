@@ -321,10 +321,11 @@ class FlyDat:
         self.varioFfilter = 0.02
         
         if fname and knowndate is None:
-            mdate = re.search("\d\d\d\d-\d\d-\d\d", fname)
-            if mdate:
+            mdates = list(re.finditer("\d\d\d\d-\d\d-\d\d", fname))
+            if mdates:
+                mdate = mdates[-1]  # last element because directory name can be wrong
                 knowndate = mdate.group(0)
-                print("Setting knowndate", knowndate)
+                print("Extracting knowndate from filename:", knowndate)
         if knowndate is not None:
             self.timestampmidnight = pandas.Timestamp(knowndate)
         elif fdother is not None:
@@ -391,9 +392,11 @@ class FlyDat:
                 elif lin[1] == "R":  # aR-type was the intro to first GPS record setting the origin
                     rms = int(lin[3:11], 16)
                     self.aRdatetime0 = pandas.to_datetime(lin[13:36])
-                    print("should be same", self.timestampmidnight, pandas.Timestamp(lin[13:23]))
+                    aRdatetime0midnight = pandas.Timestamp(lin[13:23])
                     if self.timestampmidnight is None:
-                        self.timestampmidnight = pandas.Timestamp(lin[13:23])
+                        self.timestampmidnight = aRdatetime0midnight
+                    elif self.timestampmidnight != aRdatetime0midnight:
+                        print("Error: Should be same midnight stamps", self.timestampmidnight, aRdatetime0midnight)
                         
                 elif lin[0] in self.reccounts:
                     self.reccounts[lin[0]] += 1

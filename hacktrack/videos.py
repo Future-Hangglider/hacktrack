@@ -180,7 +180,7 @@ def plotframewindowundistort(cap, framenumber, cameraMatrix, distCoeffs, newcame
 
     markerCorners, markerIds, rejectedMarkers = cv2.aruco.detectMarkers(frame, aruco_dict, parameters=parameters, cameraMatrix=cameraMatrix, distCoeff=distCoeffs)
     if markerIds is not None:
-        cv2.aruco.refineDetectedMarkers(frame, charboard, markerCorners, markerIds, rejectedMarkers, cameraMatrix, distCoeffs)
+        markerCorners, markerIds, rejectedMarkers, recoveredIdxs = cv2.aruco.refineDetectedMarkers(frame, charboard, markerCorners, markerIds, rejectedMarkers, cameraMatrix, distCoeffs)
         retval, charucoCorners, charucoIds = cv2.aruco.interpolateCornersCharuco(markerCorners, markerIds, frame, charboard, cameraMatrix=cameraMatrix, distCoeffs=distCoeffs)
         if retval is not None:
             cv2.aruco.drawDetectedCornersCharuco(frame, charucoCorners, charucoIds)
@@ -241,14 +241,15 @@ def findtiltfromvideoframes(cap, cameraMatrix, distCoeffs, squaresX, squaresY, c
             print(framenum)
         markerCorners, markerIds, rejectedMarkers = cv2.aruco.detectMarkers(frame, aruco_dict, parameters=parameters, cameraMatrix=cameraMatrix, distCoeff=distCoeffs)
         if markerIds is None:   continue
-        cv2.aruco.refineDetectedMarkers(frame, charboard, markerCorners, markerIds, rejectedMarkers, cameraMatrix, distCoeffs)
+        markerCorners, markerIds, rejectedMarkers, recoveredIdxs = cv2.aruco.refineDetectedMarkers(frame, charboard, markerCorners, markerIds, rejectedMarkers, cameraMatrix, distCoeffs)
         retval, charucoCorners, charucoIds = cv2.aruco.interpolateCornersCharuco(markerCorners, markerIds, frame, charboard, cameraMatrix=cameraMatrix, distCoeffs=distCoeffs)
         if not retval:          continue
         retval, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(charucoCorners, charucoIds, charboard, cameraMatrix, distCoeffs)
         if not retval:          continue
         r = cv2.Rodrigues(rvec)[0][2]
         val = {"framenum":framenum, "tx":tvec[0][0], "ty":tvec[1][0], "tz":tvec[2][0], 
-                                    "rx":r[0], "ry":r[1], "rz":r[2]}
+                                    "rx":rvec[0][0], "ry":rvec[1][0], "rz":rvec[2][0], 
+                                    "nx":r[0], "ny":r[1], "nz":r[2]}
         vals.append(val)
 
     # These orientations are relative to the orientation of the charuco board, which is fixed relative to North
